@@ -308,6 +308,10 @@ QEMU 成功启动后，内核输出启动信息：
 (THU.CST) os is loading ...
 ```
 
+运行截图如下：
+
+![make qemu 运行结果](./images/make_qemu.png)
+
 随后内核进入死循环。这与 `kern/init/init.c` 中的代码一致：
 
 ```c
