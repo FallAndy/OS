@@ -232,9 +232,9 @@
 
 [RELY]
 - `Makefile` 中 QEMU 调试目标包含 `-s -S`。
-- `Makefile` 中内核加载参数：
+- `Makefile` 中内核启动参数：
   ```bash
-  -device loader,file=$(UCOREIMG),addr=0x80200000
+  -kernel $(UCOREIMG)
   ```
 - 当前符号表关键结果：
   ```text
