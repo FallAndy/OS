@@ -410,3 +410,165 @@ obj/kernel.sym
 通过本次实验，我们理解并验证了 lab1 最小可执行内核的启动过程。QEMU 模拟的 RISC-V 虚拟机从复位地址 `0x1000` 开始执行固件代码，经由 OpenSBI 完成基础初始化后，将控制权交给加载在 `0x80200000` 的内核入口 `kern_entry`。内核入口首先设置内核栈，然后跳转到 C 语言函数 `kern_init`。`kern_init` 完成 `.bss` 清零，通过 `cprintf` 输出启动信息，最后进入死循环。
 
 本实验虽然代码量不大，但覆盖了操作系统启动中非常关键的基础概念：固件、特权级、内核入口、链接脚本、栈初始化、裸机 C 运行环境和调试方法。这些内容为后续实验中的中断、内存管理、进程管理和系统调用机制打下了基础。
+
+---
+
+# Lab 2：物理内存和页表
+
+## 第一阶段：物理内存初始化与 Best-Fit 分配器
+
+### 一、阶段目标
+
+本阶段完成以下功能：
+
+1. 从设备树读取物理内存基址和大小，建立 `Page` 描述符数组。
+2. 保留 OpenSBI、内核镜像、对齐空隙和描述符数组占用的页面。
+3. 将剩余完整物理页交给物理内存管理器。
+4. 实现 Best-Fit 连续物理页分配器，并替换默认 First-Fit 管理器。
+5. 通过实验自带的 Page Init、Best-Fit 测试和 QEMU 运行验证。
+
+### 二、修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `code/kern/mm/pmm.c` | 实现 `page_init()`，切换到 `best_fit_pmm_manager` |
+| `code/kern/mm/best_fit_pmm.c` | 实现完整 Best-Fit 管理器并注册 `best_fit_pmm_manager` |
+| `code/kern/init/entry.S` | 为分页切换增加低地址恒等映射，同时保留高地址内核映射 |
+| `code/Makefile` | 将 QEMU 内核加载方式改为新版 OpenSBI 可识别的 `-kernel` |
+| `code/tools/grade.sh` | 使自动评分使用同样的 `-kernel` 启动方式 |
+
+原有 `default_pmm.c`、`basic_check()`、`best_fit_check()` 和 `default_check()` 均未修改。
+
+### 三、核心实现
+
+#### 3.1 物理内存初始化
+
+`page_init()` 首先调用 `get_memory_base()` 和 `get_memory_size()` 获取设备树报告的物理内存范围，并检查零值、加法溢出和可管理上界。
+
+随后设置：
+
+```c
+va_pa_offset = PHYSICAL_MEMORY_OFFSET;
+npage = PPN(ROUNDDOWN(managed_end, PGSIZE));
+pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+```
+
+`pages` 数组覆盖 `[nbase, npage)` 中的物理页。初始化时所有描述符均设为 Reserved；描述符数组的物理末端再次向上按页对齐，只有其后到物理内存末端之间的完整页面才通过 `init_memmap()` 加入空闲区。若设备树信息无效或描述符数组超出内存范围，则调用 `panic()`；若没有剩余完整页面，则不调用 `init_memmap()`。
+
+#### 3.2 Best-Fit 分配器
+
+Best-Fit 使用 `free_area_t` 保存地址有序的空闲块链表和空闲页总数。
+
+- 初始化：清空链表并将 `nr_free` 置零。
+- 登记空闲区：清除 Reserved 状态，以块首 `Page.property` 记录连续页数。
+- 分配：扫描全部空闲块，选择满足请求的最小块；多余部分形成新的空闲块。
+- 释放：按物理地址插入链表，再分别检查并合并前后相邻块。
+- 统计：`nr_free_pages()` 返回当前空闲页总数。
+- 检查：管理器的 `check` 指向实验原有的 `best_fit_check()`。
+
+### 四、实际测试结果
+
+#### 4.1 page_init 单独编译
+
+执行：
+
+```bash
+make -C code obj/kern/mm/pmm.o
+```
+
+结果：
+
+```text
++ cc kern/mm/pmm.c
+```
+
+`pmm.o` 编译成功。
+
+#### 4.2 完整编译
+
+执行：
+
+```bash
+cd code
+make clean
+make -j2
+```
+
+所有内核源文件成功编译，并生成：
+
+```text
+bin/kernel
+bin/ucore.img
+```
+
+#### 4.3 自动评分
+
+最终执行 `make grade` 的真实结果为：
+
+```text
+lab2 injection complete
+  -check page init:                          OK
+  -check best fit:                           OK
+Total Score: 20/20
+```
+
+自动评分在临时目录中注入并执行测试，当前源码中的原有测试函数没有被修改。
+
+#### 4.4 QEMU 运行
+
+执行：
+
+```bash
+make qemu
+```
+
+关键输出为：
+
+```text
+Domain0 Next Address      : 0x0000000080200000
+Physical Memory from DTB:
+  Base: 0x0000000080000000
+  Size: 0x0000000008000000 (128 MB)
+  End:  0x0000000087ffffff
+(THU.CST) os is loading ...
+memory management: best_fit_pmm_manager
+physical memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+check_alloc_page() succeeded!
+satp virtual address: 0xffffffffc0205000
+satp physical address: 0x0000000080205000
+```
+
+内核随后进入设计中的死循环，测试时由 `timeout` 发送终止信号结束 QEMU。
+
+### 五、问题与解决方法
+
+1. **老师提供的初始框架无法完整编译**
+
+   `best_fit_pmm.c` 只包含测试函数，测试直接使用尚未定义的 `free_list` 和 `nr_free`。按照任务要求实现 Best-Fit 私有状态和全部管理函数后，完整编译通过。
+
+2. **首次 `make grade` 得到 `0/20`**
+
+   QEMU 输出显示 `Domain0 Next Address` 为 `0x0`。原因是旧式 `-device loader` 只把镜像放入内存，没有让当前 OpenSBI 将其作为下一阶段内核。将 Makefile 和评分脚本改为 `-kernel bin/ucore.img` 后，Next Address 变为 `0x80200000`。
+
+3. **修改加载参数后内核仍无输出**
+
+   OpenSBI 已跳转到 `0x80200000`，但启动页表只有高地址映射。写入 `satp` 后，CPU 仍在低物理地址执行，下一条指令无法取出。为 VPN2[2] 增加 `0x80000000 -> 0x80000000` 的恒等映射后，内核能够平稳切换到高地址继续运行。
+
+4. **描述符数组边界风险**
+
+   初版代码在初始化全部描述符后才计算数组物理末端。边界复查后，将数组末端和物理内存上界检查提前，防止极小内存范围下越界写入。
+
+### 六、本阶段结论
+
+物理内存初始化和 Best-Fit 连续页分配已经完成，完整编译、自动评分和 QEMU 运行均通过。当前结果尚未推送到远程仓库，等待确认后再提交。
+
+## Lab 2 后续内容预留
+
+后续将在此继续补充：
+
+- First-Fit 算法分析及改进思考；
+- Buddy System 实现与测试；
+- 可选 SLUB Challenge；
+- GDB 页表查询调试；
+- Lab 2 完整知识点总结和最终实验结论。

@@ -34,7 +34,7 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-    pmm_manager = &default_pmm_manager;
+    pmm_manager = &best_fit_pmm_manager;
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -61,7 +61,71 @@ size_t nr_free_pages(void) {
     return pmm_manager->nr_free_pages();
 }
 
-//lab2 function1 YOUR CODE
+//lab2 function1 2413995
+static void page_init(void) {
+    extern char end[];
+
+    uint64_t mem_base = get_memory_base();
+    uint64_t mem_size = get_memory_size();
+    if (mem_base == 0 || mem_size == 0 || mem_base + mem_size < mem_base) {
+        panic("invalid physical memory range from DTB");
+    }
+
+    uint64_t mem_end = mem_base + mem_size;
+    uint64_t managed_end = mem_end;
+    if (managed_end > PHYSICAL_MEMORY_END) {
+        managed_end = PHYSICAL_MEMORY_END;
+    }
+    if (mem_base >= managed_end || managed_end <= DRAM_BASE) {
+        panic("physical memory range is outside the manageable DRAM area");
+    }
+
+    va_pa_offset = PHYSICAL_MEMORY_OFFSET;
+    npage = PPN(ROUNDDOWN(managed_end, PGSIZE));
+    if (npage <= nbase) {
+        panic("no manageable physical pages");
+    }
+
+    uintptr_t kernel_end_pa = PADDR((uintptr_t)end);
+    if (kernel_end_pa < mem_base || kernel_end_pa >= managed_end) {
+        panic("kernel image is outside the detected physical memory");
+    }
+
+    pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+    size_t page_count = npage - nbase;
+    uintptr_t pages_va = (uintptr_t)pages;
+    if (page_count > ((uintptr_t)-1 - pages_va) / sizeof(struct Page)) {
+        panic("physical page descriptor array overflows");
+    }
+    uintptr_t pages_end_va = pages_va + page_count * sizeof(struct Page);
+    uintptr_t pages_end_pa = PADDR(pages_end_va);
+    if (pages_end_pa > managed_end) {
+        panic("physical page descriptor array exceeds detected memory");
+    }
+
+    for (size_t i = 0; i < page_count; i++) {
+        pages[i].ref = 0;
+        pages[i].flags = 0;
+        pages[i].property = 0;
+        list_init(&pages[i].page_link);
+        SetPageReserved(&pages[i]);
+    }
+
+    uintptr_t free_start = ROUNDUP(pages_end_pa, PGSIZE);
+    uintptr_t detected_start = ROUNDUP(mem_base, PGSIZE);
+    if (free_start < detected_start) {
+        free_start = detected_start;
+    }
+    uintptr_t free_end = ROUNDDOWN(managed_end, PGSIZE);
+
+    cprintf("physical memory map:\n");
+    cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n",
+            mem_size, mem_base, mem_end - 1);
+
+    if (free_start < free_end) {
+        init_memmap(pa2page(free_start), (free_end - free_start) / PGSIZE);
+    }
+}
 
 /* pmm_init - initialize the physical memory management */
 void pmm_init(void) {

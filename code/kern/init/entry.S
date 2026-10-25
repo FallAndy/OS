@@ -56,11 +56,15 @@ bootstacktop:
     .global boot_page_table_sv39
 # 分配 4KiB 内存给预设的三级页表
 boot_page_table_sv39:
-    # 0xffffffff_c0000000 map to 0x80000000 (1G)
-    # 前 511 个页表项均设置为 0 ，因此 V=0 ，意味着是空的(unmapped)
-    .zero 8 * 511
-    # 设置最后一个页表项，PPN=0x80000，标志位 VRWXAD 均为 1
-    .quad (0x80000 << 10) | 0xcf # VRWXAD
+    # Keep an identity mapping while satp takes effect at physical 0x80200000.
+    .zero 8 * 2
+    .quad (0x80000 << 10) | 0xcf # VPN2[2]: 0x80000000 -> 0x80000000
+
+    # Leave entries 3..510 unmapped.
+    .zero 8 * 508
+
+    # Map the high kernel window to the same physical 1 GiB region.
+    .quad (0x80000 << 10) | 0xcf # VPN2[511]: 0xffffffffc0000000 -> 0x80000000
 
     .global boot_hartid
 boot_hartid:

@@ -390,3 +390,161 @@
 - 如果推送远端卡在认证或网络层，应保留本地提交并说明需要用户在有认证的终端执行 `git push -u origin lab1`。
 ```
 
+
+---
+
+# Lab 2 提示词与实现记录
+
+## Prompt 1：物理内存初始化与 Best-Fit 分配器
+
+### [PROMPT]
+
+**任务：** 完成 RISC-V ucore Lab 2 中的物理内存初始化功能和 Best-Fit 连续物理页分配功能，使代码能够在现有交叉编译环境下成功编译，并通过实验自带测试及 `make grade` 自动测试。
+
+**操作要求：**
+
+1. 直接在当前 Git 仓库的 `lab2` 分支中修改真实源文件，源码位于 `code/`。
+2. 先实现 `page_init()`，再实现 Best-Fit。每一阶段都进行编译验证。
+3. 严格遵循现有函数签名、数据结构和接口约定，不修改实验框架提供的 `basic_check()`、`best_fit_check()`、`default_check()`。
+4. 保留 `lab2` 注释，将已完成位置的 `YOUR CODE` 替换为学号 `2413995`。
+5. 不修改 `lab1` 分支，不删除现有报告，不使用硬编码的固定空闲内存范围替代设备树探测。
+6. 实现完成后运行测试。对发现的问题实际修改代码、重新测试，不得仅通过修改测试函数使其通过。
+
+**输出要求：** 总结修改的文件、核心实现逻辑、实际测试结果、遇到的问题和解决方法。把本次实际使用的提示词及其实现过程记录到 `report/prompt.md`，把真实测试结果记录到 `report/report.md` 中，保留后续补充其他任务的空间。
+
+### [RELY]
+
+请先阅读当前工程中的以下真实文件，使用其中的定义，不要自行猜测不存在的接口：
+
+- `code/kern/mm/pmm.c`
+- `code/kern/mm/pmm.h`
+- `code/kern/mm/memlayout.h`
+- `code/kern/mm/mmu.h`
+- `code/kern/mm/default_pmm.c`
+- `code/kern/mm/default_pmm.h`
+- `code/kern/mm/best_fit_pmm.c`
+- `code/kern/mm/best_fit_pmm.h`
+- `code/kern/driver/dtb.c`
+- `code/kern/driver/dtb.h`
+- `code/libs/defs.h`
+- `code/libs/list.h`
+- `code/tools/test_lab2.c`
+- `code/tools/grade.sh`
+
+特别注意以下真实接口和约定：
+
+```c
+struct Page *pages;
+size_t npage;
+uint64_t va_pa_offset;
+const size_t nbase;
+
+uint64_t get_memory_base(void);
+uint64_t get_memory_size(void);
+
+struct Page *alloc_pages(size_t n);
+void free_pages(struct Page *base, size_t n);
+size_t nr_free_pages(void);
+```
+
+`pmm.h` 定义了 `struct pmm_manager`，包含 `init`、`init_memmap`、`alloc_pages`、`free_pages`、`nr_free_pages` 和 `check` 函数指针。
+
+`memlayout.h` 定义了 `struct Page`、页面状态宏、`PHYSICAL_MEMORY_OFFSET`、`PHYSICAL_MEMORY_END` 等。
+
+`defs.h` 定义了 `ROUNDUP()` 和 `ROUNDDOWN()`。
+
+`default_pmm.c` 是可参考的完整 First-Fit 实现。
+
+`best_fit_pmm.c` 中已有两个不可修改的测试函数，其中直接使用 `free_list` 和 `nr_free`，实现时必须保证这些标识符可用且符合原有测试约定。
+
+### [GUARANTEE]
+
+#### 功能一：物理内存初始化
+
+在 `code/kern/mm/pmm.c` 中实现：
+
+```c
+static void page_init(void);
+```
+
+该函数由现有的 `pmm_init()` 调用。
+
+#### 功能二：Best-Fit 分配器
+
+在 `code/kern/mm/best_fit_pmm.c` 中提供完整的：
+
+```c
+const struct pmm_manager best_fit_pmm_manager;
+```
+
+实现其所有必需操作，具体内部函数名称可以自行设计，但必须符合现有框架接口。
+
+修改 `pmm.c` 的 `init_pmm_manager()`，切换为：
+
+```c
+pmm_manager = &best_fit_pmm_manager;
+```
+
+不得删除原有 First-Fit 实现。
+
+### [SPECIFICATION]
+
+#### 1. page_init()
+
+**Pre-Condition：** `dtb_init()` 已执行，物理内存管理器已通过 `init_pmm_manager()` 初始化。
+
+**Post-Condition：** 正确设置 `va_pa_offset`、`npage`、`pages`，完成物理页面状态初始化，并将合法空闲页面交给当前内存管理器。
+
+**有效设备树信息：**
+
+- 使用 `get_memory_base()` 和 `get_memory_size()` 获取物理内存范围。
+- 检查范围有效性、整数溢出及可管理地址上界。
+- 根据链接符号 `end` 确定描述符数组位置，将 `pages` 放置在内核结尾之后的页对齐地址。
+- 为 `[nbase, npage)` 中的物理页面建立描述符，初始全部标记为保留。
+- 确保内核、对齐空隙和描述符数组占用的页面不会进入空闲页面集合。
+- 只对剩余完整空闲页面调用 `init_memmap()`，并输出识别到的物理内存范围。
+
+**异常和边界：**
+
+- 设备树信息无效时通过 `panic()` 终止初始化。
+- 没有可用完整页面时不得以零页面数调用 `init_memmap()`。
+- 保证 `page2pa()` 与 `pa2page()` 的映射关系正确。
+
+#### 2. Best-Fit
+
+- 初始化空闲链表和空闲页计数。
+- 分配时遍历所有可用块，选择不小于请求且大小最接近请求的块，必要时拆分。
+- 释放时按物理地址顺序插入，并合并前后相邻空闲块。
+- 覆盖单页、多页、分配失败、拆分、合并和计数恢复等边界。
+- 不修改原有 `basic_check()` 和 `best_fit_check()`。
+- `pmm_manager->check()` 必须实际执行既有检查。
+
+#### 3. 测试与验收
+
+依次执行 `make`、`make grade` 和 `make qemu`。目标验收标志为：
+
+```text
+memory management: best_fit_pmm_manager
+check_alloc_page() succeeded!
+[Test 1] Page Init: PASS
+[Test 2] Best-Fit: PASS
+Total Score: 20/20
+```
+
+不得在未实际通过时声称通过；完成后展示 `git diff --stat`，未经确认不得推送远程仓库。
+
+### 实际实现过程
+
+1. 阅读物理页描述符、页号转换、设备树接口、First-Fit 参考实现和自动测试脚本。
+2. 在 `pmm.c` 中实现 `page_init()`，先通过单独编译 `obj/kern/mm/pmm.o` 验证。
+3. 在 `best_fit_pmm.c` 中实现空闲链表初始化、地址有序插入、最优块选择、拆分、释放合并和空闲页计数，并注册 `best_fit_pmm_manager`。
+4. 将 `pmm_manager` 切换到 Best-Fit，完整执行 `make`。
+5. 首次 `make grade` 为 `0/20`。QEMU 输出显示 OpenSBI 的 Next Address 为 `0x0`，因此将旧式 loader 参数改为 `-kernel`。
+6. 第二次 `make grade` 仍为 `0/20`。此时 Next Address 已是 `0x80200000`，但内核无输出；定位为启动页表缺少低地址恒等映射，`satp` 生效后无法继续取指。
+7. 在 `entry.S` 中同时建立低地址恒等映射和高地址内核映射后，`make grade` 得到 `20/20`，`make qemu` 也输出正确的内存信息和分配器检查结果。
+8. 最终未修改 `basic_check()`、`best_fit_check()` 或 `default_check()`，也未向远程仓库推送。
+
+## Lab 2 后续提示词预留
+
+后续将在本节继续补充 First-Fit 分析、Buddy System、测试设计、GDB 页表调试以及实验报告整理所使用的提示词。
+
