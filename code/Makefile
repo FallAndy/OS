@@ -34,6 +34,14 @@ CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror
 CFLAGS	+= -fno-builtin -Wall -O2 -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
+
+# PMM=buddy explicitly enables the Lab2 Buddy System implementation.
+PMM ?= best_fit
+ifeq ($(PMM),buddy)
+CFLAGS += -DUSE_BUDDY_PMM
+else ifneq ($(PMM),best_fit)
+$(error unsupported PMM '$(PMM)'; use best_fit or buddy)
+endif
 CFLAGS2 = $(CFLAGS) -D ucore_test
 CTYPE	:= c S
 LD      := $(GCCPREFIX)ld

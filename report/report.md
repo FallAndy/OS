@@ -572,3 +572,91 @@ satp physical address: 0x0000000080205000
 - 可选 SLUB Challenge；
 - GDB 页表查询调试；
 - Lab 2 完整知识点总结和最终实验结论。
+## 第二阶段：Buddy System 分配器与独立测试
+
+### 一、阶段目标
+
+在不影响默认 Best-Fit 评分行为的前提下，实现真正的伙伴系统，并为其设计可在内核中执行的独立测试。测试重点不是“能够分配”，而是验证按 2 的整数次幂管理、逐级拆分、伙伴识别、递归合并、计数一致性和异常路径。
+
+### 二、修改文件
+
+- `code/kern/mm/buddy_pmm.c`：实现伙伴分配器、内部一致性检查及七类独立测试；
+- `code/kern/mm/buddy_pmm.h`：声明 `buddy_pmm_manager` 和 `buddy_check()`；
+- `code/kern/mm/pmm.c`：按 `USE_BUDDY_PMM` 选择 Buddy，默认仍选择 Best-Fit；
+- `code/Makefile`：增加 `PMM=buddy` 可选构建模式；
+- `report/prompt.md`：记录 Buddy 实现 Prompt 和本次测试 Prompt。
+
+老师原有的 First-Fit、Best-Fit 测试，以及 `tools/test_lab2.c`、`tools/grade.sh` 均未修改。
+
+### 三、测试隔离方法
+
+测试开始时，先通过真实 Buddy 分配器申请一个 32 页连续块作为测试区域，并记录此时的空闲页总数和每一阶空闲链表头。随后临时清空管理器的各阶链表，只把这 32 页按用例需要重新登记，因此测试中的拆分、分配、释放和合并不会接触测试区域之外的真实空闲页。
+
+每组用例结束后都会检查内部结构；全部测试结束时，将测试区域恢复成一个“已分配的 32 页块”，还原原有链表和计数，再通过真实释放路径归还该块。最后断言空闲页总数与测试开始前完全相同。
+
+非规则区域用例使用测试块中的 `arena + 1` 到 `arena + 29`，左右保留页面继续保持 Reserved，既覆盖非对齐起点和非 2 次幂长度，也防止测试越界。
+
+### 四、测试覆盖与有效性
+
+1. **基本分配与释放**：依次申请 1、2、4、8 页，检查返回区间位于测试区域内、互不重叠、块大小正确；逆序释放后确认恢复为完整 32 页块。
+2. **非 2 次幂请求**：申请 3、5、7 页，直接检查分配块头记录的实际大小分别为 4、8、8，验证向上取整规则。
+3. **逐级拆分**：从单个 32 页块申请 1 页，检查偏移 1、2、4、8、16 处分别形成 1、2、4、8、16 页的剩余块，证明每一阶拆分均真实发生。
+4. **伙伴合并**：连续申请四个单页块，先释放偏移 1 和 2 的页面。二者物理相邻但不是同阶伙伴，此时断言没有错误合并；随后释放真正伙伴，检查先合并为 2 页，再递归恢复成 32 页。
+5. **内存不足**：占满 32 页后再次申请，以及申请 33 页，均必须返回 `NULL`；失败前后空闲页计数和链表结构保持一致。
+6. **非规则初始区域**：登记偏移 1、长度 29 页的区域，检查保护页仍为 Reserved；由于地址对齐限制，16 页请求失败且状态不变，小块分配与全部回收后总数恢复到 29。
+7. **状态一致性**：混合申请 1、2、3、4、5 页，并按交错顺序释放；每一步都调用内部校验，检查块对齐、链表阶数、保留标志、未合并伙伴和空闲页计数。
+
+每项成功信息都位于对应断言之后；任一条件不满足都会由 `assert()` 终止内核，因此 PASS 不是预设输出。
+
+### 五、实际编译与运行结果
+
+Buddy 模式使用以下命令重新清理并编译：
+
+```bash
+make clean
+make PMM=buddy -j2
+timeout --signal=TERM 12s make PMM=buddy qemu
+```
+
+QEMU 中的真实关键输出如下：
+
+```text
+memory management: buddy_pmm_manager
+Buddy test 1 - basic allocation: PASS
+Buddy test 2 - rounded requests: PASS
+Buddy test 3 - recursive split: PASS
+Buddy test 4 - buddy merge: PASS
+Buddy test 5 - out of memory: PASS
+Buddy test 6 - irregular region: PASS
+Buddy test 7 - state consistency: PASS
+Buddy System tests: PASS
+check_alloc_page() succeeded!
+```
+
+测试代码第一次在 QEMU 中执行即通过全部断言，未发生需要通过修改测试或弱化断言处理的失败。
+
+随后清理 Buddy 构建产物，恢复默认 Best-Fit 并执行：
+
+```bash
+make clean
+make grade
+```
+
+真实评分结果：
+
+```text
+-check page init:                          OK
+-check best fit:                           OK
+Total Score: 20/20
+```
+
+老师测试文件的 SHA-256 复核结果与修改前一致：
+
+```text
+6feb75f20361d95436856e525af80bef0c55b300391cda3a6deaeda53a0f118d  code/tools/test_lab2.c
+1e363513751a273e6976006e7ec4e157583d88f7d780be05e6e1d4dd8ee7404f  code/tools/grade.sh
+```
+
+### 六、本阶段结论
+
+Buddy 管理器已在可选构建模式下完成真实内核测试，七类测试均通过；默认 Best-Fit 自动评分仍为 20/20。测试结束后原有空闲内存状态得到恢复，本阶段结果仅保留在本地，未提交、未推送。
