@@ -42,6 +42,14 @@ CFLAGS += -DUSE_BUDDY_PMM
 else ifneq ($(PMM),best_fit)
 $(error unsupported PMM '$(PMM)'; use best_fit or buddy)
 endif
+
+# SLUB_CHALLENGE=1 enables the optional Lab2 object allocator.
+SLUB_CHALLENGE ?= 0
+ifeq ($(SLUB_CHALLENGE),1)
+CFLAGS += -DSLUB_CHALLENGE
+else ifneq ($(SLUB_CHALLENGE),0)
+$(error unsupported SLUB_CHALLENGE '$(SLUB_CHALLENGE)'; use 0 or 1)
+endif
 CFLAGS2 = $(CFLAGS) -D ucore_test
 CTYPE	:= c S
 LD      := $(GCCPREFIX)ld

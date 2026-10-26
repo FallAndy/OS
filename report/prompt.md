@@ -1,398 +1,3 @@
-# Lab 1 提示词汇总
-
-本文件汇总 Lab 1 实验过程中使用并整理后的主要提示词。根据实验指导书中“好的提示词”要求，以下提示词尽量采用四段式结构：
-
-- `[PROMPT]`：说明任务目标、操作要求和输出要求。
-- `[RELY]`：提供完成任务所需的最小可信上下文。
-- `[GUARANTEE]`：明确本次任务必须交付的内容。
-- `[SPECIFICATION]`：用可验证的方式描述输出应满足的要求。
-
-由于 Lab 1 不要求补全内核代码，提示词主要用于实验指导书阅读、源码理解、练习作答、调试分析、报告撰写和交付物整理。
-
----
-
-## Prompt 1：阅读实验指导书并梳理 Lab 1 学习目标
-
-```markdown
-[PROMPT]
-**任务**：阅读当前工作区中的实验指导书镜像，重点阅读 `lab0`、`lab0.5` 和 `lab1` 相关页面，梳理 Lab 1 开始前需要理解的背景、环境要求、AI 协作方法和实验目标。
-
-**操作要求**：请直接读取工作区中的指导书文件，不要依赖远程网页。阅读时优先关注实验目的、实验内容、练习题、项目组成、启动流程、GDB 调试和实验报告要求。
-
-**输出要求**：用简洁、适合后续实验开展的语言总结：`lab0`、`lab0.5`、`lab1` 分别讲了什么，Lab 1 需要完成哪些核心任务，以及后续完成实验的建议路径。
-
-[RELY]
-- 指导书镜像目录：`docs/course-guide`
-- Lab 0 页面目录：`docs/course-guide/lab0`
-- Lab 0.5 页面目录：`docs/course-guide/lab0.5`
-- Lab 1 页面目录：`docs/course-guide/lab1`
-- Lab 1 重点页面：
-  - `lab1_1_goals.html`
-  - `lab1_2_1_exercise.html`
-  - `lab1_2_2_file.html`
-  - `lab1_3_1_layout.html`
-  - `lab1_3_2_linkerscript.html`
-  - `lab1_3_3_sbi_io.html`
-  - `lab1_3_4_makeit.html`
-  - `lab1_4_gdb.html`
-  - `lab1_5_requirement.html`
-
-[GUARANTEE]
-必须输出以下内容：
-1. `lab0` 的主要内容概括。
-2. `lab0.5` 的主要内容概括。
-3. `lab1` 的实验目标、实验内容和练习要求。
-4. 完成 Lab 1 的推荐步骤。
-
-[SPECIFICATION]
-## 阅读总结
-**Pre-Condition**:
-- 工作区中已经存在实验指导书镜像。
-- 需要从本地文件中读取内容。
-
-**Post-Condition**:
-- 输出应能帮助实验者理解 Lab 1 的整体目标和任务边界。
-- 输出应明确 Lab 1 的两个练习分别关注什么。
-
-**Requirements**:
-- 不编造指导书中不存在的任务。
-- 对 Lab 1 的总结应突出“最小可执行内核”“启动流程”“链接脚本”“OpenSBI 输出”“GDB 调试”这些关键词。
-```
-
----
-
-## Prompt 2：导入 Lab 1 代码并确认项目结构
-
-```markdown
-[PROMPT]
-**任务**：将主机目录 `D:\学习、材料、资料\操作系统\lab1` 中的 Lab 1 实验代码复制到当前工作区，并确认复制后的代码结构是否完整。
-
-**操作要求**：请先检查源目录是否存在，再检查其中是否包含 `Makefile`、`kern`、`libs`、`tools` 等关键内容。确认目标工作区中没有同名目录冲突后，再复制到当前工作区。
-
-**输出要求**：说明是否成功看到源代码、复制后的目标路径是什么，并列出 Lab 1 的关键文件和目录。
-
-[RELY]
-- 主机源目录：`D:\学习、材料、资料\操作系统\lab1`
-- 当前工作区：`\\wsl$\Ubuntu-22.04\home\fall\oslab\OS`
-- Lab 1 代码应包含：
-  - `Makefile`
-  - `kern/init/entry.S`
-  - `kern/init/init.c`
-  - `kern/driver/console.c`
-  - `kern/libs/stdio.c`
-  - `libs/sbi.c`
-  - `libs/printfmt.c`
-  - `tools/kernel.ld`
-  - `tools/function.mk`
-
-[GUARANTEE]
-必须完成或确认：
-1. 源目录可读。
-2. Lab 1 代码复制到当前工作区。
-3. 复制后的目录中包含核心源码文件。
-4. 不修改实验代码内容。
-
-[SPECIFICATION]
-## 代码导入
-**Pre-Condition**:
-- 主机路径下已经下载好 Lab 1 代码。
-- 当前工作区可写。
-
-**Post-Condition**:
-- 当前工作区中出现 `lab1` 目录。
-- `lab1` 目录中包含 `Makefile`、`kern`、`libs`、`tools`。
-
-**Requirements**:
-- 如果目标目录已经存在，应先说明情况，不要静默覆盖未知内容。
-- 复制后需要用文件列表验证结果。
-```
-
----
-
-## Prompt 3：解释 Lab 1 每份关键代码的作用
-
-```markdown
-[PROMPT]
-**任务**：阅读 Lab 1 源码，用简单易懂的语言解释每份关键代码在最小可执行内核中的作用，并梳理从 QEMU/OpenSBI 到内核输出的完整执行链路。
-
-**操作要求**：请直接读取当前工作区中的 Lab 1 源码，不要只根据文件名猜测。解释时按照启动顺序组织：链接脚本、汇编入口、C 初始化、格式化输出、控制台封装、SBI 调用、基础库和 Makefile。
-
-**输出要求**：给出面向初学者的代码导读，说明每个关键文件做什么、处于启动链路的哪个位置、与其他模块如何交互。最后给出建议阅读顺序。
-
-[RELY]
-- `tools/kernel.ld`：指定 `BASE_ADDRESS = 0x80200000` 和入口 `kern_entry`。
-- `kern/init/entry.S`：定义 `kern_entry`、`bootstack`、`bootstacktop`。
-- `kern/init/init.c`：定义 `kern_init`，清空 `.bss`，调用 `cprintf`，最后死循环。
-- `kern/libs/stdio.c`：实现 `cprintf`、`vcprintf`、`cputchar`、`cputs`。
-- `kern/driver/console.c`：将 `cons_putc` 封装到 `sbi_console_putchar`。
-- `libs/sbi.c`：通过内联汇编设置寄存器并执行 `ecall`。
-- `libs/printfmt.c`：负责格式化字符串解析。
-- `libs/string.c`：提供 `memset` 等基础函数。
-- `kern/mm/mmu.h`：定义 `PGSIZE = 4096`、`PGSHIFT = 12`。
-- `kern/mm/memlayout.h`：定义 `KSTACKSIZE`。
-
-[GUARANTEE]
-必须解释以下文件或模块：
-1. `Makefile`
-2. `tools/kernel.ld`
-3. `kern/init/entry.S`
-4. `kern/init/init.c`
-5. `kern/libs/stdio.c`
-6. `kern/driver/console.c`
-7. `libs/sbi.c`
-8. `libs/printfmt.c`
-9. `libs/string.c`
-10. `libs/defs.h`、`libs/riscv.h`、`kern/mm/mmu.h`、`kern/mm/memlayout.h`
-
-[SPECIFICATION]
-## 代码导读
-**Pre-Condition**:
-- Lab 1 代码已经存在于当前工作区。
-- QEMU 已能成功运行最小内核。
-
-**Post-Condition**:
-- 输出应能解释最小内核从 `0x80200000` 到 `kern_init` 再到 `cprintf` 的执行过程。
-- 输出应明确 `cprintf -> vprintfmt -> cons_putc -> sbi_console_putchar -> ecall` 的输出链路。
-
-**Requirements**:
-- 解释应使用通俗语言，但不能牺牲关键技术事实。
-- 不要求逐行解释所有代码，应突出和 Lab 1 启动流程相关的核心逻辑。
-```
-
----
-
-## Prompt 4：完成练习 1 的标准回答
-
-```markdown
-[PROMPT]
-**任务**：根据 Lab 1 源码和实验指导书要求，回答练习 1：阅读 `kern/init/entry.S`，说明 `la sp, bootstacktop` 完成了什么操作、目的是什么；说明 `tail kern_init` 完成了什么操作、目的是什么。
-
-**操作要求**：回答必须结合当前代码中的真实符号和内核启动流程。不要只解释单条汇编指令的字面意思，还要说明它们为什么出现在内核入口处。
-
-**输出要求**：给出可直接写入实验报告的标准回答，语言清晰，结构完整。
-
-[RELY]
-- `kern/init/entry.S` 中定义：
-  ```asm
-  .globl kern_entry
-  kern_entry:
-      la sp, bootstacktop
-      tail kern_init
-
-  .section .data
-      .align PGSHIFT
-      .global bootstack
-  bootstack:
-      .space KSTACKSIZE
-      .global bootstacktop
-  bootstacktop:
-  ```
-- `KSTACKSIZE = KSTACKPAGE * PGSIZE`
-- `KSTACKPAGE = 2`
-- `PGSIZE = 4096`
-- `kern_init` 在 `kern/init/init.c` 中定义，负责清空 `.bss`、输出启动信息并进入死循环。
-- RISC-V 中 `sp` 是栈指针寄存器，栈通常向低地址增长。
-
-[GUARANTEE]
-回答必须包含：
-1. `la sp, bootstacktop` 的作用。
-2. 为什么要在进入 C 函数前设置栈。
-3. `bootstack` 和 `bootstacktop` 的含义。
-4. `tail kern_init` 的作用。
-5. 为什么这里使用尾调用跳转是合理的。
-6. 对这两条指令在启动流程中作用的总结。
-
-[SPECIFICATION]
-## 练习 1 答案
-**Pre-Condition**:
-- OpenSBI 已将控制权交给内核入口 `kern_entry`。
-- 内核尚未完成 C 语言运行环境准备。
-
-**Post-Condition**:
-- `sp` 应指向内核启动栈顶。
-- 控制流应从汇编入口转入 C 语言入口 `kern_init`。
-
-**Requirements**:
-- 必须说明 C 函数调用依赖栈。
-- 必须说明 `kern_entry` 不需要返回，因此 `tail kern_init` 可以直接移交控制权。
-- 回答应适合放入实验报告。
-```
-
----
-
-## Prompt 5：完成练习 2 的 GDB 调试记录与分析
-
-```markdown
-[PROMPT]
-**任务**：根据 Lab 1 的 QEMU/GDB 调试要求，整理练习 2 的实验过程和标准回答：使用 GDB 跟踪 RISC-V 虚拟机从加电后的第一条指令开始，直到控制流进入 `0x80200000` 并开始执行内核第一条指令。
-
-**操作要求**：请结合当前 Lab 1 的 Makefile、符号表和反汇编结果进行分析。需要说明应如何启动 `make debug` 和 `make gdb`，如何设置断点，如何观察 `pc`、`sp` 和 `0x80200000` 附近的指令。
-
-**输出要求**：给出可直接写入实验报告的调试过程、观察结果和问题回答。
-
-[RELY]
-- `Makefile` 中 QEMU 调试目标包含 `-s -S`。
-- `Makefile` 中内核启动参数：
-  ```bash
-  -kernel $(UCOREIMG)
-  ```
-- 当前符号表关键结果：
-  ```text
-  0000000080200000 kern_entry
-  000000008020000a kern_init
-  0000000080201000 bootstack
-  0000000080203000 bootstacktop
-  ```
-- 当前反汇编关键结果：
-  ```asm
-  80200000: auipc sp,0x3
-  80200004: mv    sp,sp
-  80200008: j     8020000a <kern_init>
-  ```
-- QEMU virt 平台复位入口位于 `0x1000` 附近。
-- OpenSBI 负责完成固件初始化并将控制权移交给内核。
-
-[GUARANTEE]
-回答必须包含：
-1. `make debug` 和 `make gdb` 的用途。
-2. 查看复位地址附近指令的 GDB 命令。
-3. 在 `0x80200000` 设置断点的 GDB 命令。
-4. 对 `0x1000` 初始执行地址的解释。
-5. 对 `0x80200000` 和 `kern_entry` 对应关系的解释。
-6. 对进入 `kern_init` 后行为的说明。
-
-[SPECIFICATION]
-## 练习 2 答案
-**Pre-Condition**:
-- 内核已经能够通过 `make qemu` 成功运行。
-- 编译产物中存在 `bin/kernel`、`bin/ucore.img`、`obj/kernel.asm`、`obj/kernel.sym`。
-
-**Post-Condition**:
-- 能说明 CPU 加电后先从 `0x1000` 附近执行固件代码。
-- 能说明控制流最终进入 `0x80200000` 的 `kern_entry`。
-- 能说明 `kern_entry` 首先设置栈，再跳转到 `kern_init`。
-
-**Requirements**:
-- 调试记录应包含具体 GDB 命令。
-- 结论必须和当前符号表、反汇编结果一致。
-- 不得把 `0x1000` 误认为内核入口。
-```
-
----
-
-## Prompt 6：按照实验报告要求撰写单人实验报告
-
-```markdown
-[PROMPT]
-**任务**：根据实验指导书的 Lab 1 报告要求、当前源码分析、练习 1 和练习 2 的答案，撰写一份 Markdown 格式实验报告，并按照单人实验报告口径组织内容。
-
-**操作要求**：请使用已有实验报告模板作为结构参考，但不要保留小组分工等不适用于单人实验的空模板内容。报告内容应以文本说明为主，覆盖指导书明确要求的所有部分。
-
-**输出要求**：在 `lab1/实验报告.md` 或交付目录 `report/report.md` 中形成完整 Markdown 报告。
-
-[RELY]
-- 实验名称：Lab 1: 比麻雀更小的麻雀（最小可执行内核）
-- 姓名/学号：王帅2413995
-- 指导书报告要求：
-  1. 基于 Markdown 格式完成实验报告。
-  2. 说明本章节整体逻辑线。
-  3. 说明每个功能的核心函数或功能模块理解。
-  4. 列出本实验重要知识点及其与 OS 原理知识点的对应关系。
-  5. 列出 OS 原理中重要但本实验没有对应上的知识点。
-  6. 回答所有练习中提出的问题。
-- 已完成练习：
-  - 练习 1：理解 `entry.S` 中的 `la sp, bootstacktop` 和 `tail kern_init`。
-  - 练习 2：使用 GDB 验证启动流程。
-
-[GUARANTEE]
-报告必须包含：
-1. 实验基本信息。
-2. 实验目的。
-3. 实验环境。
-4. 本章整体逻辑分析。
-5. 核心模块和函数理解。
-6. 练习 1 答案。
-7. 练习 2 调试过程和答案。
-8. 测试与验证。
-9. 重要 OS 知识点对应关系。
-10. OS 原理中重要但本实验未覆盖的知识点。
-11. 实验总结。
-
-[SPECIFICATION]
-## 实验报告
-**Pre-Condition**:
-- Lab 1 代码已经运行成功。
-- 练习 1 和练习 2 的分析结论已经整理完成。
-
-**Post-Condition**:
-- 生成的报告可作为实验交付物提交。
-- 报告不再强调小组分工，使用单人完成口径。
-
-**Requirements**:
-- 报告中引用的地址、符号和命令必须与当前 Lab 1 工程一致。
-- 报告不得留下模板占位符，如“待补充”“学号1”“模块名称”等。
-- 报告应保留可验证依据，例如 `0x80200000`、`kern_entry`、`bootstacktop`、`make qemu`、`make debug`、`make gdb`。
-```
-
----
-
-## Prompt 7：整理 Lab 1 交付物并提交 Git 分支
-
-```markdown
-[PROMPT]
-**任务**：按照实验提交规范整理 Lab 1 交付物，并在 Git 仓库中创建 `lab1` 分支完成本地提交。
-
-**操作要求**：交付目录必须只包含规范要求的 `code` 和 `report` 两个文件夹。`code` 文件夹包含实验实现后的源码；`report` 文件夹包含 `report.md`、`prompt.md` 和 `images` 文件夹。不要把指导书镜像目录或临时编译产物作为本次交付内容提交。
-
-**输出要求**：完成目录整理、分支创建、暂存和提交，并说明提交后的分支名、提交号和未提交内容。
-
-[RELY]
-- Git 仓库根目录：`/home/fall/oslab/OS`
-- 目标分支名：`lab1`
-- 交付结构：
-  ```text
-  code/
-    Makefile
-    kern/
-    libs/
-    tools/
-  report/
-    report.md
-    prompt.md
-    images/
-  ```
-- 原始源码目录：`lab1`
-- 报告源文件：`lab1/实验报告.md`
-
-[GUARANTEE]
-必须完成：
-1. 创建或切换到 `lab1` 分支。
-2. 创建 `code` 和 `report` 目录。
-3. 将源码复制到 `code`，不包含 `bin`、`obj` 等编译产物。
-4. 将实验报告复制为 `report/report.md`。
-5. 将提示词汇总保存为 `report/prompt.md`。
-6. 创建 `report/images` 文件夹，并确保可被 Git 跟踪。
-7. 只提交 `code` 和 `report`。
-
-[SPECIFICATION]
-## Git 交付
-**Pre-Condition**:
-- Lab 1 报告和源码已经准备完成。
-- 当前仓库可以创建分支和本地提交。
-
-**Post-Condition**:
-- Git 当前分支为 `lab1`。
-- 本地存在一次包含 `code` 和 `report` 的提交。
-- `docs` 和原始 `lab1` 工作目录不进入本次提交。
-
-**Requirements**:
-- 提交前必须检查 `git status` 和 `git diff --cached --stat`。
-- 如果推送远端卡在认证或网络层，应保留本地提交并说明需要用户在有认证的终端执行 `git push -u origin lab1`。
-```
-
-
----
-
 # Lab 2 提示词与实现记录
 
 ## Prompt 1：物理内存初始化与 Best-Fit 分配器
@@ -544,12 +149,8 @@ Total Score: 20/20
 7. 在 `entry.S` 中同时建立低地址恒等映射和高地址内核映射后，`make grade` 得到 `20/20`，`make qemu` 也输出正确的内存信息和分配器检查结果。
 8. 最终未修改 `basic_check()`、`best_fit_check()` 或 `default_check()`，也未向远程仓库推送。
 
-## Lab 2 后续提示词预留
-
-后续将在本节继续补充 First-Fit 分析、Buddy System、测试设计、GDB 页表调试以及实验报告整理所使用的提示词。
-
-
 ---
+
 
 ## Prompt 2：Buddy System 分配模块实现
 
@@ -777,3 +378,292 @@ check_alloc_page() succeeded!
 
 恢复默认 Best-Fit 后，`make grade` 输出 `Total Score: 20/20`。老师提供的测试文件哈希保持不变，本阶段未提交、未推送。
 
+## Prompt 4：GDB 调试 QEMU 的 MMU 地址转换过程
+
+### [PROMPT]
+
+**任务：** 根据本地 Lab 2 实验指导书中的 `lab2_4_qemu_mmu_debug.html`，完成 QEMU MMU 地址转换的源码分析与真实 GDB 调试，观察一次 RISC-V Sv39 虚拟地址到物理地址的转换过程。
+
+**操作要求：**
+
+- 先检查当前 QEMU 版本、源码位置、调试符号与 GDB 环境，不直接照搬指导书中针对 QEMU 4.1.1 的旧命令。
+- 当前环境使用 WSL2 Ubuntu 22.04，已有 RISC-V 工具链和 QEMU，优先复用现有环境。
+- 若必须重新编译调试版 QEMU，应使用独立构建目录，不覆盖已安装的 QEMU，不执行 `sudo make install`。
+- 使用宿主机 GDB 调试 QEMU 自身，使用 RISC-V GDB 调试被模拟的 ucore 内核，明确区分二者。
+- 不破坏已通过测试的 Lab 2 内核和分配器代码。
+- 必须执行真实调试，不能仅根据源码推断调试结果。
+
+### [RELY]
+
+读取并核对：
+
+- `docs/course-guide/lab2/lab2_4_qemu_mmu_debug.html`
+- `code/Makefile`
+- `code/kern/init/entry.S`
+- `code/kern/init/init.c`
+- `code/kern/mm/mmu.h`
+- `code/kern/mm/pmm.c`
+
+在 QEMU 实际源码中定位 RISC-V MMU 地址翻译、页表遍历及 TLB 相关函数，不预先假设函数名和具体调用路径。
+
+### [GUARANTEE]
+
+交付一次可以复现的 MMU 调试实验，包含实际 QEMU 版本和调试环境、宿主与客户机 GDB 命令、真实断点命中、一个具体虚拟地址的转换、Sv39 调用路径、TLB 未命中处理和软件模拟行为，并保存必要的调试输出图。
+
+### [SPECIFICATION]
+
+1. 宿主 GDB 能对 QEMU 源码设置有效断点，客户机 GDB 能观察 ucore。
+2. 选择真实执行地址，记录虚拟地址、页表基址、页表层级、PTE 和最终物理地址；大页映射需要解释提前终止原因。
+3. 定位 TLB 查询和未命中实现，解释 QEMU 软件 TLB 与真实硬件 TLB 的逻辑关系和差异。
+4. 将命令、源码路径、单步过程、输出图和结论写入 `report/report.md`，将 Prompt 和问题写入 `report/prompt.md`；未完成项必须明确说明。
+5. 不自动提交或推送 GitHub。
+
+### 实际调试过程
+
+1. 检查得到 QEMU 版本为 7.0.0，源码位于 `/home/fall/qemu-7.0.0`，实际二进制为 `/opt/qemu/bin/qemu-system-riscv64`，对应构建产物为 `/home/fall/qemu-7.0.0/build/qemu-system-riscv64`。
+2. `file` 和 `readelf` 证实该二进制未剥离且包含 `.debug_info`、`.debug_line`、`.symtab`，因此未重新编译或安装 QEMU。
+3. 环境没有普通宿主 GDB，且 `sudo` 需要密码。为避免修改系统，将 Ubuntu GDB 12.1 和必要运行库解压到 `/tmp/oslab-gdb-local2`，通过 `LD_LIBRARY_PATH` 运行。
+4. 使用 RISC-V GDB 连接 QEMU GDB stub，在 `kern_init=0xffffffffc02000d6` 处命中，读取 `satp=0x8000000000080205` 和根页表第 511 项。
+5. 使用宿主 GDB 调试 QEMU，在 `riscv_cpu_tlb_fill`、`get_physical_address`、`get_page_addr_code_hostp`、`tlb_set_page` 设置条件断点，真实记录页表遍历和 TLB 状态。
+6. 将三组真实输出整理为等宽排版图保存到 `report/images`。图片仅重排真实输出，报告中明确说明其性质。
+
+### 遇到的问题与处理
+
+1. **宿主 GDB 缺失：** 未使用需要密码的 `sudo apt install`，改为用户态下载并解压软件包；第一次下载被截断，校验失败后在新临时目录重新下载完整包。
+2. **非登录 Shell 找不到交叉 GDB：** 改用 `/home/fall/riscv-elf-toolchains/bin/riscv64-unknown-elf-gdb` 绝对路径。
+3. **`$pc` 被外层 Shell 处理：** 后续批处理使用已由符号表确认的具体地址，交互复现时仍可直接使用 `x/8i $pc`。
+4. **现有 QEMU 带调试信息但经过优化：** `until` 可能跨出内联或优化后的函数，局部变量显示 `optimized out`。改为预先在 QEMU 7.0.0 的具体源码行设置条件断点，并对最终物理地址使用单一断点复核。
+5. **批处理断点标签顺延：** 两个被优化合并的源码行没有单独命中，因此不采用顺延标签作为结论，而以断点实际所在行和最后一次单断点输出为准。
+
+### 实际结果
+
+对 `kern_init` 指令地址 `0xffffffffc02000d6` 的真实调试得到：
+
+- `satp = 0x8000000000080205`，Sv39 根页表物理地址为 `0x80205000`；
+- `VPN2=511`，根表 PTE 地址为 `0x80205ff8`；
+- PTE 为 `0x200000cf`，PPN 为 `0x80000`，是带 `V/R/W/X/A/D` 的二级叶子项；
+- 该叶子映射 1 GiB 大页，因此不继续访问 VPN1、VPN0 对应的下级页表；
+- 最终物理地址为 `0x802000d6`；
+- 软件 TLB 首次条目为无效值 `0xffffffffffffffff`，填充后同一地址再次查询时条目为 `0xffffffffc0200000`；
+- `tlb_set_page` 实测写入 `VA page 0xffffffffc0200000 -> PA page 0x80200000`，权限值为 7，QEMU TCG 条目大小为 4 KiB。
+
+本阶段没有修改内核和分配器源代码，未提交、未推送。
+## Prompt 5：SLUB 内存对象分配器实现
+
+### [PROMPT]
+
+**任务：** 在现有 RISC-V ucore Lab 2 工程中，实现一个简化的 SLUB 内存对象分配器，以现有物理页面分配器为底层，实现不同大小内存对象的高效分配和释放。
+
+**操作要求：**
+
+1. 在当前 `lab2` 分支修改真实源码，新建 `code/kern/mm/slub.c` 和 `slub.h`。
+2. 采用两层架构：底层使用 `alloc_pages()`、`free_pages()`，上层在物理页内管理小对象。
+3. SLUB 保持为独立模块，不替换 `struct pmm_manager`。
+4. 默认仍使用 Best-Fit，保留 Buddy System 实现与测试。
+5. 通过明确编译开关增加可选初始化入口，默认不影响 `make grade`。
+6. 本阶段完成实现、编译和基础启动；独立功能测试套件留给下一份 Prompt。
+7. 不修改老师测试和评分脚本，追加报告，不提交、不推送。
+
+### [RELY]
+
+实际读取并遵循：
+
+- `code/kern/mm/pmm.c`、`pmm.h`、`memlayout.h`、`mmu.h`
+- `code/kern/mm/best_fit_pmm.c`
+- `code/kern/mm/buddy_pmm.c`、`buddy_pmm.h`
+- `code/kern/init/init.c`
+- `code/libs/list.h`、`defs.h`
+- `code/Makefile`
+
+使用现有接口：
+
+```c
+struct Page *alloc_pages(size_t n);
+void free_pages(struct Page *base, size_t n);
+size_t nr_free_pages(void);
+uintptr_t page2pa(struct Page *page);
+```
+
+物理页存储地址必须通过 `page2pa(page) + va_pa_offset` 转为内核虚拟地址，不能把 `struct Page *` 当作对象存储，也不能依赖被注释掉的 `KADDR()`。
+
+### [GUARANTEE]
+
+新增公开接口：
+
+```c
+void slub_init(void);
+void *slub_alloc(size_t size);
+void slub_free(void *ptr);
+```
+
+实现不能依赖动态堆分配器；在 `pmm_init()` 后通过可选开关初始化。
+
+### [SPECIFICATION]
+
+- 管理 8、16、32、64、128、256、512、1024、2048 字节分类。
+- 非标准请求选择最小可容纳分类。
+- slab 满时从 PMM 获取新页面。
+- 大于 2048 字节的请求走连续页直接分配并保存释放元数据。
+- `size == 0` 或溢出返回 `NULL`。
+- 对象至少按指针大小对齐，不重叠、不覆盖元数据。
+- `slub_free(NULL)` 安全返回。
+- 普通对象可复用，slab 全空时页面归还 PMM，大对象释放全部连续页。
+- 使用 `SLUB_CHALLENGE=1` 显式启用，默认关闭。
+- 依次验证默认编译、SLUB 编译和启动、恢复默认 `make grade`。
+- 不把尚未执行的完整功能测试标记为 PASS。
+
+### 实际实现过程
+
+实现采用页内元数据方案。每个小对象 slab 占用一个物理页，页首保存 magic、底层 `struct Page *`、所属 cache、链表节点、空闲对象链、对象计数和 512 位分配位图；对象区从按指针大小对齐的页首元数据之后开始。九个静态 cache 分别维护 partial 和 full slab 链表。
+
+空闲对象的首个指针宽度空间用于保存下一空闲对象地址，已分配位图用于验证对象状态并阻止重复释放。slab 最后一个对象释放时，从 cache 链表删除并通过 `free_page()` 归还底层 PMM。
+
+大对象在连续页首页保存 `slub_large` 元数据，记录底层页描述符、申请页数和请求大小，对外返回元数据之后的对齐地址。释放时将地址向下页对齐，读取 magic 并按记录调用 `free_pages()`。
+
+新增 `SLUB_CHALLENGE ?= 0` 构建开关；值为 1 时定义 `SLUB_CHALLENGE`，由 `kern_init()` 在 `pmm_init()` 后调用 `slub_init()`。
+
+### 实际验证
+
+执行了：
+
+```bash
+make clean
+make -j2
+make clean
+make SLUB_CHALLENGE=1 -j2
+timeout --signal=TERM 12s make SLUB_CHALLENGE=1 qemu
+make clean
+make grade
+```
+
+SLUB 模式真实启动输出包含：
+
+```text
+memory management: best_fit_pmm_manager
+check_alloc_page() succeeded!
+SLUB: initialized 9 size classes (8..2048 bytes)
+```
+
+默认自动评分保持：
+
+```text
+-check page init:                          OK
+-check best fit:                           OK
+Total Score: 20/20
+```
+
+本阶段没有运行下一阶段的独立对象分配测试，因此只确认实现进入编译、初始化不变量通过且内核正常启动，不声称完整功能测试 PASS。未修改老师测试，未提交、未推送。
+## Prompt 6：SLUB 分配器独立测试
+
+### [PROMPT]
+
+**任务：** 针对已实现的 SLUB 内存对象分配器，设计能够在 QEMU 中真实运行的独立测试，验证不同大小对象的分配、释放、复用和物理页回收。
+
+**操作要求：**
+
+1. 读取最新 `slub.c`、`slub.h`、`pmm.c`、`memlayout.h` 及相关代码，根据实际实现测试。
+2. 不修改 First-Fit、Best-Fit、Buddy System 的既有测试。
+3. 测试必须执行断言、地址和数据完整性检查，不能只打印 PASS。
+4. 测试隔离并清理自身资源，不破坏 PMM 状态。
+5. 测试后恢复默认 Best-Fit 并运行 `make grade`。
+6. 追加 Prompt、设计、真实输出与错误修复过程，不提交、不推送。
+
+### [RELY]
+
+公开接口：
+
+```c
+void slub_init(void);
+void *slub_alloc(size_t size);
+void slub_free(void *ptr);
+size_t nr_free_pages(void);
+```
+
+可以使用内核 `assert()`、`cprintf()` 和内存操作；页面大小及 slab 元数据必须来自当前真实实现。
+
+### [GUARANTEE]
+
+新增并实际执行：
+
+```c
+void slub_check(void);
+```
+
+通过可选 SLUB Challenge 模式接入内核，并为每组成功测试输出明确结果。
+
+### [SPECIFICATION]
+
+1. 分配 1、8、16、24、32、64、100、128、256、512、1024、2048 字节，检查地址、对齐和不重叠。
+2. 写入、读取不同字节模式，验证对象间数据隔离。
+3. 释放部分同类对象并重新申请，验证安全复用和活跃对象数据。
+4. 动态读取单页对象容量并分配更多对象，强制扩展到第二个 slab。
+5. 释放空 slab，验证页面归还且活跃 slab 不被误回收。
+6. 测试 13、100、300、3000、4096、8192 字节请求和大对象释放。
+7. 测试零长度、空指针、过大请求、多轮分配释放和开始/结束空闲页一致性。
+8. QEMU 真实运行后恢复默认配置并保持 `make grade 20/20`。
+
+预期成功输出必须由真实断言之后产生，不得提前打印。
+
+### 实际测试实现
+
+在 `slub.c` 内新增结构校验器，遍历九个 cache 的 partial/full 链表，检查 slab magic、page 到 KVA 映射、所属 cache、对象数量、free_count、分配位图和空闲链节点数量。partial slab 必须有空闲但不能全空，full slab 必须没有空闲节点。
+
+七组测试各自记录 `nr_free_pages()`，完整释放本组对象后断言恢复。每组结束还要求所有 cache 链表为空。大对象虽不进入小对象 cache 链表，但通过首页元数据、请求大小、页数和最终 PMM 页数恢复进行验证。
+
+内存不足测试没有耗尽真实内存，而是请求超过整个可管理物理页范围的连续对象；底层 PMM 安全返回 `NULL`，并断言空闲页和 SLUB 结构不变。
+
+### 实际结果
+
+执行：
+
+```bash
+make clean
+make SLUB_CHALLENGE=1 -j2
+timeout --signal=TERM 15s make SLUB_CHALLENGE=1 qemu
+```
+
+真实输出：
+
+```text
+SLUB test 1 - size classes: PASS
+SLUB test 2 - data integrity: PASS
+SLUB test 3 - object reuse: PASS
+SLUB test 4 - slab expansion: PASS
+SLUB test 5 - page reclaim: PASS
+SLUB test 6 - irregular sizes: PASS
+SLUB test 7 - state consistency: PASS
+SLUB tests: PASS
+```
+
+测试代码第一次在 QEMU 中运行即通过全部断言，没有发生需要修改 SLUB 实现或弱化测试的运行错误。补丁应用期间曾因统一差异的行数声明错误被 Git 整体拒绝，修正补丁元数据后正常应用；这没有产生半写入源码，也不是分配器功能错误。
+
+恢复默认配置后 `make grade` 仍输出 `Total Score: 20/20`。测试代码保留在 SLUB 模块中，未修改老师测试，未提交、未推送。
+---
+
+## Prompt 7：最终交付审查
+
+### [PROMPT]
+
+**任务：** 对当前 Lab 2 工程进行最终交付审查，阅读本地 `lab2_2_1_exercise.html`、`lab2_4_qemu_mmu_debug.html` 和 `lab2_5_labs_requirement.html`，逐项核对 `report/report.md`、`report/prompt.md` 与 `report/images/`。
+
+**核查重点：**
+
+1. 检查必做练习、思考题、GDB 分支任务和 SLUB Challenge；
+2. 核查 First-Fit 四个核心函数、First-Fit/Best-Fit 改进空间、物理内存探测思考题；
+3. 确认 Buddy 与 SLUB 各自具有实现和独立测试两份 Prompt；
+4. 仅根据真实源码和测试记录补缺，不编造结果；
+5. 移除 Lab 1 遗留、过期内容与错误路径，但保留真实实验成果；
+6. 重新运行默认 Best-Fit `make grade`，并核验 Buddy、SLUB 测试证据；
+7. 最后执行 `git status`、`git diff --check`，列出待提交文件与未完成事项；
+8. 不修改已通过的分配器实现，不提交、不推送。
+
+### 实际审查与修订过程
+
+- 逐项对照三份本地指导书，确认原报告缺少 First-Fit 四函数说明、First-Fit/Best-Fit 政策改进思考、物理内存未知时的探测回答和实验整体知识总结；
+- 依据真实 `default_pmm.c`、`best_fit_pmm.c`、`pmm.c`、`dtb.c` 补充分析，没有改动分配器源码；
+- 确认 Prompt 2/3 分别对应 Buddy 实现与测试，Prompt 5/6 分别对应 SLUB 实现与测试；
+- 用哈希确认 Lab 2 报告前部和三张旧截图与 `lab1` 分支内容一致后，从当前 Lab 2 交付物中移除，原成果仍由 `lab1` 分支保存；
+- 初次用非登录 shell 构建时因工具链不在 `PATH` 报错，改用 `bash -lic` 后完成真实回归；
+- Buddy 七组 QEMU 测试通过，SLUB 七组 QEMU 测试通过；
+- 最后恢复默认 Best-Fit，`make grade` 实际得到 `Total Score: 20/20`；
+- 最终 Git 状态与差异检查结果以本次交付审查结论为准，未执行 commit 或 push。
