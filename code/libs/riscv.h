@@ -18,6 +18,11 @@
 #endif
 #define REGBYTES (1 << LOG_REGBYTES)
 
+/* Current binutils names the supervisor bad-address CSR stval. */
+#ifdef __ASSEMBLER__
+# define sbadaddr stval
+#endif
+
 #define MSTATUS_UIE         0x00000001
 #define MSTATUS_SIE         0x00000002
 #define MSTATUS_HIE         0x00000004

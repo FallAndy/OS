@@ -1,4 +1,4 @@
-PROJ	:= lab2
+PROJ	:= lab3
 EMPTY	:=
 SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
@@ -49,6 +49,15 @@ ifeq ($(SLUB_CHALLENGE),1)
 CFLAGS += -DSLUB_CHALLENGE
 else ifneq ($(SLUB_CHALLENGE),0)
 $(error unsupported SLUB_CHALLENGE '$(SLUB_CHALLENGE)'; use 0 or 1)
+endif
+
+# Lab3's guide requires shutdown after SHUTDOWN_AFTER tick reports, but the
+# supplied framework does not define the count.  Keep the default build and
+# official tests unchanged; pass the teacher-specified positive count with
+# `make SHUTDOWN_AFTER=<count> ...` when that value is available.
+SHUTDOWN_AFTER ?=
+ifneq ($(strip $(SHUTDOWN_AFTER)),)
+CFLAGS += -DSHUTDOWN_AFTER=$(SHUTDOWN_AFTER)
 endif
 CFLAGS2 = $(CFLAGS) -D ucore_test
 CTYPE	:= c S
@@ -114,6 +123,8 @@ $(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)
 
 KINCLUDE	+= kern/debug/ \
 			   kern/driver/ \
+			   kern/trap/ \
+			   kern/sync/ \
 			   kern/mm/ \
 			   kern/arch/
 
@@ -121,6 +132,7 @@ KSRCDIR		+= kern/init \
 			   kern/libs \
 			   kern/debug \
 			   kern/driver \
+			   kern/trap \
 			   kern/mm
 
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
@@ -216,7 +228,7 @@ TOUCH_FILES		:=
 
 MAKEOPTS		:= --quiet --no-print-directory
 
-GRADE_TMP	:= /tmp/lab2_grade
+GRADE_TMP	:= /tmp/lab3_grade
 
 grade:
 	$(V)$(MAKE) $(MAKEOPTS) clean
