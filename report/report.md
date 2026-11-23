@@ -133,7 +133,7 @@ TrapFrame 被放在新进程内核栈顶端，并复制父调用者准备的初�
 - 每个模块先读源码和指导书，再做最小实现、独立编译和完整构建；后续模块未完成造成的链接错误如实记录，不用伪实现绕过。
 - 最终验收把功能正确性与评分环境兼容性分开，避免把替代启动结果冒充原始评分结果。
 
-五份完整开发提示词及独立执行记录见 [prompt.md](prompt.md)。
+五份开发提示词、本轮 Challenge 提示词及独立执行记录见 [prompt.md](prompt.md)。
 
 ## 6. 调试过程、问题与解决方法
 
@@ -277,3 +277,233 @@ TrapFrame 保存中断或异常发生时恢复特权级执行所需的较完整�
 - Lab 2 的 Buddy/SLUB 源码和 Lab 3 Trap 源码在工程中保留，但本轮 Lab 4 验收没有重新执行 Buddy/SLUB 专项测试，因此不新增其通过结论。
 - 当前机器已经独立安装并实际验证 QEMU 4.1.1/OpenSBI v0.4；原 QEMU 7.0.0 仍被保留。
 - 回调函数指针类型警告仍然存在，原因和实际影响已在第 6.3 节说明。
+
+## 9. Challenge：扩展练习与深入思考
+
+### 9.1 `local_intr_save()` 与 `local_intr_restore()` 如何开关中断
+
+#### 题目与源码依据
+
+本实验的宏定义位于 `kern/sync/sync.h`：
+
+```c
+static inline bool __intr_save(void) {
+    if (read_csr(sstatus) & SSTATUS_SIE) {
+        intr_disable();
+        return 1;
+    }
+    return 0;
+}
+
+static inline void __intr_restore(bool flag) {
+    if (flag) {
+        intr_enable();
+    }
+}
+
+#define local_intr_save(x) \
+    do {                   \
+        x = __intr_save(); \
+    } while (0)
+#define local_intr_restore(x) __intr_restore(x);
+```
+
+`SSTATUS_SIE` 在 `libs/riscv.h` 中定义为 `0x2`，对应 `sstatus` 的 Supervisor Interrupt Enable 位。`kern/driver/intr.c` 中的底层操作为：
+
+```c
+void intr_enable(void)  { set_csr(sstatus, SSTATUS_SIE); }
+void intr_disable(void) { clear_csr(sstatus, SSTATUS_SIE); }
+```
+
+`set_csr` 和 `clear_csr` 最终分别使用 CSR 原子读改写指令 `csrrs` 和 `csrrc` 设置、清除 `SIE`。当 `SIE=0` 时，当前 hart 不接收普通的 S 模式中断；异常以及更高特权级的处理并不由这个位统一屏蔽。因此这里实现的是“本地 S 模式中断开关”，不是关闭处理器上的一切事件。
+
+#### 保存、关闭与恢复过程
+
+`intr_flag` 保存的是进入临界区前 `SIE` 是否为 1，而不是完整的 `sstatus`：
+
+1. `local_intr_save(intr_flag)` 读取 `sstatus.SIE`。
+2. 如果原来允许中断，则清除 `SIE` 并令 `intr_flag=1`；如果原来已经禁止中断，则不重复操作并令 `intr_flag=0`。
+3. 临界区结束时，`local_intr_restore(intr_flag)` 只在 `intr_flag=1` 时重新设置 `SIE`。
+
+这与无条件调用 `intr_enable()` 的区别在于，它恢复的是进入临界区之前的状态。两种具体情况如下：
+
+| 进入前状态 | `local_intr_save()` 后 | `intr_flag` | `local_intr_restore()` 后 |
+| --- | --- | --- | --- |
+| `SIE=1`，中断开启 | 清除 `SIE` | 1 | 重新设置 `SIE`，恢复为开启 |
+| `SIE=0`，中断已关闭 | 保持 `SIE=0` | 0 | 不执行开启操作，仍为关闭 |
+
+这种语义也支持同一 hart 上的嵌套临界区：外层在中断开启时保存 1 并关中断；内层看到中断已经关闭，只保存 0，内层退出时不会过早打开中断；最后由外层恢复原来的开启状态。
+
+实际调用中，`schedule()` 用它保护 `need_resched`、进程链表扫描和运行次数更新；`do_fork()` 用它保护 PID 分配、哈希表和进程链表插入；`proc_run()` 用它保证 `current`、`satp`、TLB 与寄存器上下文切换之间不会被本地中断处理流程观察到不一致的中间状态。
+
+#### 适用边界与结论
+
+本地关中断只能消除当前 hart 上由中断造成的并发，不能阻止其他 hart 同时访问共享数据，也不提供锁的所有权、等待、公平性或完整的多核内存同步语义。因此它适合本实验的单核临界区；在多核内核中，通常还需配合自旋锁等同步原语。核心原则是：**保存原状态、临时关闭、按原状态恢复，不能在退出时无条件开中断。**
+
+### 9.2 Sv32、Sv39 与 Sv48 分页机制比较
+
+#### 共同工作原理
+
+三种模式都使用以 4 KiB 为基本页大小的多级基数树页表。`satp` 给出当前地址空间的分页模式和根页表物理页号；硬件把虚拟地址拆成若干段 VPN 和 12 位页内偏移，从最高级 VPN 开始逐级读取 PTE。有效 PTE 若 `R/W/X` 均为 0，表示指向下一级页表；若构成合法叶子项，则地址翻译在该级结束，叶子所在层级决定页面大小。无效项、非法权限组合或地址/大页对齐不满足要求时会产生页故障。
+
+多级页表能够节省内存，是因为稀疏地址空间只需为实际使用的虚拟地址范围分配经过的下级页表页，而不必一次建立覆盖整个虚拟空间的巨大线性表；代价是 TLB 未命中时需要更多级访存，并增加页表页管理复杂度。
+
+#### 参数对比
+
+| 分页模式 | 适用架构 | 有效虚拟地址位数 | 页表级数 | 每级索引位数 | 页内偏移 | PTE 大小 | 每张页表表项数 | 主要页面大小 |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| Sv32 | RV32 | 32 | 2 | VPN[1]、VPN[0] 各 10 位 | 12 位 | 4 B | 1024 | 4 KiB、4 MiB |
+| Sv39 | RV64 | 39 | 3 | VPN[2:0] 各 9 位 | 12 位 | 8 B | 512 | 4 KiB、2 MiB、1 GiB |
+| Sv48 | RV64 | 48 | 4 | VPN[3:0] 各 9 位 | 12 位 | 8 B | 512 | 4 KiB、2 MiB、1 GiB、512 GiB |
+
+地址拆分分别为：
+
+```text
+Sv32: VPN[1](10) | VPN[0](10) | page offset(12)
+Sv39: VPN[2](9)  | VPN[1](9)  | VPN[0](9) | page offset(12)
+Sv48: VPN[3](9)  | VPN[2](9)  | VPN[1](9) | VPN[0](9) | page offset(12)
+```
+
+Sv39 在 RV64 上还要求虚拟地址的位 63:39 全部等于位 38；Sv48 要求位 63:48 全部等于位 47。也就是说，有效地址必须把最高有效虚拟地址位符号扩展到 XLEN，否则地址不是规范地址。Sv32 使用完整的 32 位虚拟地址，不需要这种 RV64 高位规范性检查。
+
+叶子 PTE 可以出现在高于最低级的位置，从而形成大页。此时被叶子覆盖的低位 PPN 必须满足相应对齐要求：例如 Sv39 的 L1 叶子映射 2 MiB，L2 叶子映射 1 GiB。当前实验的 `get_pte()` 始终下降到 L0 并返回 4 KiB 叶子 PTE 地址，没有实现对中途大页叶子的通用识别与返回。
+
+#### `satp.MODE` 与当前实验模式
+
+在 RV32 中，Sv32 由 `satp` 的 MODE 位选择；在 RV64 中，MODE 字段位于 `satp[63:60]`，Sv39 和 Sv48 的编码分别为 8 和 9。当前 `libs/riscv.h` 定义了 `SATP_MODE_SV39=8`、`SATP_MODE_SV48=9`，`proc_run()` 使用：
+
+```c
+uintptr_t satp = ((uintptr_t)SATP_MODE_SV39 << 60) |
+                 (proc->pgdir >> RISCV_PGSHIFT);
+write_csr(satp, satp);
+```
+
+`mmu.h` 同时定义了 `PDX1SHIFT=30`、`PDX0SHIFT=21`、`PTXSHIFT=12`，三个索引都用 `0x1FF` 提取，并设置每张表 512 项。这些宏、64 位 PTE 以及实际写入的 MODE=8 共同表明当前工程使用的是 RV64 Sv39，而不是 Sv32 遗留接口或 Sv48。
+
+#### Sv39 地址拆分示例
+
+以规范虚拟地址 `0xffffffffc0201234` 为例，其低 39 位为 `0x7fc0201234`，位 63:39 是位 38 的符号扩展。按照当前宏可拆为：
+
+```text
+VPN[2] = PDX1(la) = 0x1ff = 511
+VPN[1] = PDX0(la) = 0x001 = 1
+VPN[0] = PTX(la)  = 0x001 = 1
+offset = PGOFF(la)= 0x234
+```
+
+硬件或软件遍历器先访问根页表第 511 项；若它是非叶子项，则由其 PPN 定位 L1 页表并访问第 1 项；再由该非叶子项定位 L0 页表并访问第 1 项。若最后一项是有效叶子，则把其物理页号与 `0x234` 组合得到物理地址，并检查访问权限。若在 L2 或 L1 已遇到合法叶子，则分别按 1 GiB 或 2 MiB 大页规则提前结束遍历。
+
+### 9.3 `get_pte()` 中两段相似代码的原因
+
+#### 两段代码分别负责什么
+
+当前 `kern/mm/pmm.c` 的第一段从 Sv39 根页表下降到中间的 L1 页表：
+
+```c
+pde_t *pdep1 = &pgdir[PDX1(la)];
+struct Page *new_pd0_page = NULL;
+if (!(*pdep1 & PTE_V)) {
+    struct Page *page;
+    if (!create || (page = alloc_page()) == NULL) {
+        return NULL;
+    }
+    set_page_ref(page, 1);
+    uintptr_t pa = page2pa(page);
+    memset(KADDR(pa), 0, PGSIZE);
+    *pdep1 = pte_create(page2ppn(page), PTE_V);
+    new_pd0_page = page;
+}
+```
+
+`PDX1(la)` 实际提取 VPN[2]。若根页表项无效，且 `create=true`，代码分配并清零一张新页表，设置页引用计数，再把新页表的 PPN 写入根页表项。随后通过 `PDE_ADDR(*pdep1)` 取出物理地址，`KADDR()` 把它转换为内核可访问虚拟地址。
+
+第二段从 L1 页表下降到最终的 L0 页表：
+
+```c
+pde_t *pdep0 = &((pte_t *)KADDR(PDE_ADDR(*pdep1)))[PDX0(la)];
+if (!(*pdep0 & PTE_V)) {
+    struct Page *page;
+    if (!create || (page = alloc_page()) == NULL) {
+        if (new_pd0_page != NULL) {
+            *pdep1 = 0;
+            set_page_ref(new_pd0_page, 0);
+            free_page(new_pd0_page);
+        }
+        return NULL;
+    }
+    set_page_ref(page, 1);
+    uintptr_t pa = page2pa(page);
+    memset(KADDR(pa), 0, PGSIZE);
+    *pdep0 = pte_create(page2ppn(page), PTE_V);
+}
+return &((pte_t *)KADDR(PDE_ADDR(*pdep0)))[PTX(la)];
+```
+
+`PDX0(la)` 提取 VPN[1]，该段用相同流程保证 L0 页表存在。最后 `PTX(la)` 提取 VPN[0]，函数只计算并返回最终叶子 PTE 的地址；是否把它填成叶子映射由 `page_insert()` 等调用者决定。
+
+#### 为什么处理逻辑相像
+
+两段代码本质上都是多级页表遍历中的同一个通用步骤：用当前级 VPN 计算索引，检查表项；若无效且禁止创建则失败，若允许创建则分配、清零并登记一个下级页表页；把新页表的 PPN 写成非叶子 PTE，再通过物理地址到内核虚拟地址的转换进入下一级。因此只要页表还有中间层，每下降一级就会出现近似代码。
+
+Sv32 只有两级页表，建立 4 KiB 映射通常只需一次这样的中间级创建；Sv39 有三级，需要两次；Sv48 有四级，需要三次。三种模式的区别主要是循环次数、每级索引位数和 PTE 宽度，不改变“检查—按需分配—安装非叶子项—下降”的基本模式。这也说明这两段代码不是误把 Sv32 代码复制了两遍，而是 Sv39 比 Sv32 多一级页表所必需的两次下降。
+
+#### 权限与失败回滚
+
+RISC-V 中有效且 `R=W=X=0` 的 PTE 才表示下一级页表指针。因此当前实现创建非叶子项时只传入 `PTE_V`：
+
+```c
+*pdep1 = pte_create(page2ppn(page), PTE_V);
+*pdep0 = pte_create(page2ppn(page), PTE_V);
+```
+
+不能把叶子映射使用的 `R/W/X/U/A/D` 权限直接复制到这些非叶子项，否则硬件可能把它识别为叶子，或形成不符合规范的 PTE。此前调试中出现的关键问题正是非叶子项混入 `PTE_U` 等叶子权限；修正为仅 `PTE_V` 后，层级语义才与 Sv39 一致。叶子项的 `A/D` 位则由建立实际映射的路径处理，两者不能混淆。
+
+如果第一段刚分配了 L1 页表，而第二段分配 L0 页表失败，当前实现会清除刚写入的根表项、把新页引用计数置零并释放该页，避免留下只有半条路径的页表和物理页泄漏。如果第一段原本就存在，则第二段失败时不能释放它，因为它可能还服务于其他地址。这个有条件回滚也是按需创建路径比纯查询复杂的地方。
+
+#### 通用遍历伪代码
+
+```text
+table = root_page_table
+for level from top_level down to 1:
+    index = vpn(virtual_address, level)
+    entry = &table[index]
+
+    if entry is invalid:
+        if create is false:
+            return NULL
+        child = alloc_zeroed_page_table()
+        if child allocation failed:
+            rollback only the tables created by this call
+            return NULL
+        *entry = nonleaf_pte(child.physical_page_number, V=1, R=W=X=0)
+    else if entry is a leaf or is otherwise not a legal nonleaf PTE:
+        return NULL
+
+    table = kernel_virtual_address(PTE_ADDR(*entry))
+
+return &table[vpn(virtual_address, 0)]
+```
+
+该伪代码把层数参数化后可覆盖 Sv32、Sv39 和 Sv48；当前函数是针对 Sv39 4 KiB 映射展开后的具体实现。
+
+### 9.4 是否应拆分页表查找与页表页分配
+
+#### 方案 A：保留 `get_pte(pgdir, la, create)`
+
+当前接口通过一个布尔参数复用同一套遍历逻辑。`get_page()`、`page_remove()` 使用 `create=false` 做只读查找，`page_insert()` 和 `boot_map_segment()` 使用 `create=true` 保证中间页表存在。
+
+优点是接口数量少、调用简洁，建立映射时一次遍历即可完成查找和缺失中间页表的创建，也避免维护两份相似的地址拆分代码。这与当前 Lab 4 规模、固定 Sv39 模式和教学目标相适应。
+
+缺点是查询函数具有可选的内存分配副作用，调用者必须正确理解 `create`；失败既可能表示路径不存在，也可能表示内存不足。创建跨越多个层级时还必须跟踪本次新建的页表并负责回滚，职责不够单一，纯查询和失败注入测试也更难隔离。
+
+#### 方案 B：拆成纯查询和创建接口
+
+可以设计为 `walk_pte(pgdir, la)` 只读遍历，`walk_pte_create(pgdir, la)` 允许分配缺失页表。这样接口语义明确：只读函数保证不修改页表，创建函数可以返回更细致的错误码并集中处理分配、回滚和同步；两条路径也更易分别测试，未来增加 Sv48、大页、并发页表锁或不同分配策略时更容易扩展。
+
+但如果两个公开函数各自实现完整遍历，会造成重复代码和修复不同步；若创建函数先调用纯查询、失败后再从根开始创建，则可能重复遍历。接口数量和调用者选择成本也会增加。要避免这些问题，仍需共享内部遍历器并设计能够携带“缺失层级、已创建页面、错误原因”的状态，复杂度未必适合当前教学内核。
+
+#### 中间方案与结论
+
+更合理的中间方案是保留现有外部接口，内部抽取“处理一个中间级”的辅助函数或参数化循环，并明确区分三种结果：找到、路径不存在、分配失败。辅助逻辑记录本次创建的页表页，由统一出口逆序回滚；模式描述提供层数、索引提取和 PTE 格式。这样既不改动现有调用者，又能消除 Sv39 当前两段重复代码，并为 Sv48 的额外层级预留扩展点。
+
+结论是：**对当前 Lab 4，应保留 `get_pte(pgdir, la, create)` 的外部形式**，因为调用点有限、模式固定且现有测试围绕该接口，拆成多个公开接口带来的收益不足以抵消复杂度。若发展为支持多地址空间、多种分页模式、大页和多核并发的完整内核，则应把“无副作用的 walk”与“页表页分配/映射事务”在语义上拆开，并让二者复用同一个通用层级遍历器；分配路径还应具有明确错误码、锁规则和完整事务回滚。这样能同时满足单一职责、代码复用、可测试性和扩展性。
