@@ -51,6 +51,7 @@
 #define SSTATUS_FS          0x00006000
 #define SSTATUS_XS          0x00018000
 #define SSTATUS_PUM         0x00040000
+#define SSTATUS_SUM         0x00040000
 #define SSTATUS32_SD        0x80000000
 #define SSTATUS64_SD        0x8000000000000000
 
@@ -133,6 +134,11 @@
 #define VM_SV32  8
 #define VM_SV39  9
 #define VM_SV48  10
+
+#define SATP_MODE_OFF  0
+#define SATP_MODE_SV32 1
+#define SATP_MODE_SV39 8
+#define SATP_MODE_SV48 9
 
 #define IRQ_U_SOFT   0
 #define IRQ_S_SOFT   1
@@ -910,6 +916,9 @@ lcr3(unsigned int cr3) {
 #define CAUSE_SUPERVISOR_ECALL 0x9
 #define CAUSE_HYPERVISOR_ECALL 0xa
 #define CAUSE_MACHINE_ECALL 0xb
+#define CAUSE_FETCH_PAGE_FAULT 0xc
+#define CAUSE_LOAD_PAGE_FAULT 0xd
+#define CAUSE_STORE_PAGE_FAULT 0xf
 #endif
 #ifdef DECLARE_INSN
 DECLARE_INSN(beq, MATCH_BEQ, MASK_BEQ)

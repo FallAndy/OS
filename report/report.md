@@ -1,433 +1,279 @@
-# 操作系统实验报告
+# Lab 4 实验报告：内核线程与进程调度
 
-## 实验基本信息
+## 基本信息
 
-| 项目 | 内容 |
-|---|---|
-| 实验名称 | Lab 3：中断与异常处理 |
-| 姓名 / 学号 | 王帅 / 2413995 |
-| 完成方式 | 个人独立完成 |
-| 当前分支 | `lab3` |
+- 姓名：王帅
+- 学号：2413995
+- 实验分支：`lab4`
+- 实验方式：个人独立完成
+- 实验代码：`code/`
+- 验证材料：`code/verification/`
 
-## 1. 实验目的与环境
+## 1. 实验目标与总体流程
 
-### 1.1 实验目的
+本实验在 Lab 1～3 已完成的启动、物理内存管理、页表基础和 Trap 处理机制之上，补全虚拟内存页操作、内核线程创建以及进程调度与上下文切换三个模块。实验目标是让内核能够建立和维护 Sv39 页表映射，创建第一个内核线程，并由空闲进程通过调度器切换到该线程执行。
 
-本实验在 Lab 2 物理内存管理的基础上，为 RISC-V 64 位 uCore 建立完整的 Trap 处理闭环：处理器发生中断或异常后，汇编入口保存上下文，将 TrapFrame 传给 C 语言处理函数；C 语言根据 `scause` 区分中断与异常并完成处理；最后汇编返回路径恢复上下文，通过 `sret` 返回被打断的执行流。
-
-本实验实际完成了两个功能模块：
-
-1. `RESTORE_ALL` 与 `__alltraps`：建立 Trap 入口、C 函数调用和上下文恢复机制。
-2. `interrupt_handler()` 与 `exception_handler()`：处理持续时钟中断、非法指令、断点以及兜底情况。
-
-### 1.2 实验环境
-
-| 项目 | 实际环境 |
-|---|---|
-| 主机环境 | WSL2 Ubuntu 22.04 |
-| 目标架构 | RISC-V RV64 |
-| 交叉编译器 | `riscv64-unknown-elf-gcc 15.1.0` |
-| 虚拟机 | QEMU 7.0.0，路径 `/opt/qemu/bin/qemu-system-riscv64` |
-| 固件 | OpenSBI 1.0，Runtime SBI 0.3 |
-| 正常启动镜像 | `bin/ucore.img` |
-| 正常启动参数 | `-kernel bin/ucore.img` |
-
-构建和运行证据保存在 `../code/verification/`。`../code/verification/build.log` 记录完整编译，`../code/verification/qemu_boot.log` 记录普通 QEMU 启动。
-
-## 2. 实验整体设计
-
-本实验按照指导书给出的三条主线逐步完成：
-
-1. **Trap 上下文保存与恢复**：`SAVE_ALL` 将通用寄存器和关键 CSR 保存为 `struct trapframe`，`RESTORE_ALL` 做严格对称的恢复。
-2. **Trap 入口与返回**：`__alltraps` 把当前 TrapFrame 地址作为 `a0` 传给 `trap()`，处理完成后经 `__trapret`、`RESTORE_ALL` 和 `sret` 返回。
-3. **中断与异常处理**：`trap_dispatch()` 根据 `scause` 最高位区分中断与异常，分别调用 `interrupt_handler()` 和 `exception_handler()`。
-
-整体控制流为：
+内核中与本实验直接相关的执行链如下：
 
 ```text
-硬件产生 Trap
-    -> stvec 指向 __alltraps
-    -> SAVE_ALL 建立 TrapFrame
-    -> a0 = sp，调用 trap(tf)
-    -> trap_dispatch(tf)
-       -> interrupt_handler(tf)
-       或 exception_handler(tf)
-    -> __trapret
-    -> RESTORE_ALL
-    -> sret
-    -> 返回原执行流或 tf->epc 指定的位置
+kern_init
+  -> pmm_init
+  -> pic_init / idt_init
+  -> vmm_init
+  -> proc_init
+  -> cpu_idle
+  -> schedule
+  -> proc_run
+  -> switch_to
+  -> forkret
+  -> forkrets
+  -> __trapret
+  -> kernel_thread_entry
+  -> init_main
 ```
 
-系统初始化顺序与该控制流匹配：`kern_init()` 先通过 `idt_init()` 设置 `stvec`，随后保留 Lab 2 的 `pmm_init()`，再由 `clock_init()` 设置第一个时钟事件并打开 `sie.STIE`，最后 `intr_enable()` 打开 `sstatus.SIE`。这样在全局中断打开前，Trap 入口、物理内存管理和第一个计时事件均已准备好。
+其中，虚拟内存模块为进程地址空间和内核线程栈提供页表基础；进程模块负责描述、创建和初始化执行实体；调度模块负责选择下一个可运行进程；`switch_to` 负责真正保存旧上下文并恢复新上下文。调度策略与上下文切换机制彼此分离。
 
-## 3. 功能模块一：Trap 入口与上下文恢复
+## 2. 虚拟内存页操作
 
-### 3.1 TrapFrame 布局
+### 2.1 `get_pte()`：Sv39 页表遍历与按需创建
 
-`struct trapframe` 由 32 个通用寄存器槽位和 4 个 CSR 相关字段组成：
+Sv39 使用三级页表，每级索引占 9 位。`get_pte(pgdir, la, create)` 从根页表开始，依次按 `PDX1(la)`、`PDX0(la)` 和 `PTX(la)` 查找。中间级页表项不存在且 `create` 为真时，通过 `alloc_page()` 申请一页作为下一级页表，清零后设置引用计数，并把物理页号写入父级页表项。
 
-```c
-struct trapframe {
-    struct pushregs gpr;  // x0 ~ x31
-    uintptr_t status;     // sstatus
-    uintptr_t epc;        // sepc
-    uintptr_t badvaddr;   // stval（源码兼容名 sbadaddr）
-    uintptr_t cause;      // scause
-};
-```
+本实现对非叶子页表项只设置 `PTE_V`。非叶子项不能携带叶子权限位；如果错误设置 `PTE_U`、`PTE_R`、`PTE_W` 或 `PTE_X`，在较新的 QEMU 中可能被判为保留位组合并导致地址转换失败。若创建第二级页表时内存不足，实现会撤销本次刚创建的上一级页表，清除页表项、恢复引用计数并释放页面，避免部分创建造成内存泄漏。
 
-RV64 中 `REGBYTES` 为 8，因此 TrapFrame 总大小为 `36 * 8 = 288` 字节。288 是 16 的整数倍；只要进入 Trap 前栈已对齐，`jal trap` 时仍满足 RISC-V ABI 的 16 字节栈对齐要求。
+### 2.2 `page_insert()`：建立或替换映射
 
-### 3.2 `SAVE_ALL`
+`page_insert(pgdir, page, la, perm)` 先调用 `get_pte(..., true)` 得到叶子页表项，然后增加新物理页的引用计数。若虚拟地址已经映射到同一物理页，则抵消刚增加的计数；若映射到另一物理页，则减少旧页引用计数，并在引用数归零时释放旧页。
 
-`SAVE_ALL` 是老师框架已有代码，本实验未修改。它先将 Trap 前的 `sp` 写入 `sscratch`，在栈上分配 36 个寄存器宽度的空间，然后保存除 `x2` 外的通用寄存器。随后：
+最终写入的叶子页表项由物理页号、调用者提供的权限以及有效位组成。为了符合当前 QEMU 对 Sv39 Accessed/Dirty 位的处理，实现为有效叶子映射设置 `PTE_A`，对可写映射同时设置 `PTE_D`。映射变更后执行 `tlb_invalidate()`，防止处理器继续使用旧的地址转换结果。
 
-```asm
-csrrw s0, sscratch, x0
-```
+### 2.3 `page_remove_pte()` 与 `page_remove()`：撤销映射
 
-把原 `sp` 取到 `s0`，同时把 `sscratch` 清零，再把该值存入 TrapFrame 的 `x2` 槽位。最后保存 `sstatus`、`sepc`、`stval` 和 `scause`。因此槽位 2 保存的是 Trap 前的栈指针，而不是当前 TrapFrame 基址。
+`page_remove()` 以 `create = false` 查找目标叶子页表项，因此删除不存在的映射不会额外创建页表。若页表项有效，`page_remove_pte()` 取得对应 `struct Page`，清除页表项，减少引用计数；引用计数降为零时将物理页交还物理内存分配器，随后刷新对应虚拟地址的 TLB 项。
 
-### 3.3 `RESTORE_ALL`
+这套逻辑保证“页表映射数”与页面引用计数保持一致。页表项负责虚拟地址到物理地址的关系，物理页分配器负责页面生命周期，两者不能混为一体。
 
-实现位置：`kern/trap/trapentry.S`，保留标记 `#lab3 function1 2413995`。
+### 2.4 权限、引用计数与 TLB 的关系
 
-恢复顺序分为三步：
+- 权限位决定一次访问是否允许读、写、执行或从用户态访问。
+- 引用计数记录一个物理页仍被多少有效映射使用，防止仍在使用的页面被提前释放。
+- 修改页表后刷新 TLB，是为了使软件维护的页表状态立即对处理器地址转换生效。
+- 页表中保存物理页号，内核访问页表页面时则要通过当前内核映射转换到可访问的虚拟地址。
 
-1. 从槽位 32、33 读取 `sstatus` 和 `sepc`，先写回 CSR。
-2. 恢复 `x1` 以及 `x3` 到 `x31`。
-3. 最后从槽位 2 恢复 `x2/sp`。
+### 2.5 思考：Sv32、Sv39、Sv48 与接口拆分
 
-必须最后恢复 `sp`，因为在此之前所有加载都以当前 `sp` 为 TrapFrame 基址。若过早覆盖 `sp`，后续寄存器会从错误地址读取。CSR 也在恢复保存它们的临时寄存器前写回，避免丢失返回状态。
+Sv32、Sv39、Sv48 的基本遍历思想相同：从根页表按虚拟地址分段索引逐级查找，直到叶子项或无效项。区别主要是页表层数、每级索引位数、页表项宽度和虚拟地址规范位要求。若要同时支持多种模式，适合把“只读查询”和“缺页时创建中间页表”在内部拆成可复用辅助逻辑，并把层数、索引提取和页表项格式参数化；对外仍可保留符合 uCore 调用习惯的 `get_pte(..., create)` 接口。这样既避免各模式重复代码，也能让只读路径明确保证不分配内存。
 
-### 3.4 `__alltraps`、`__trapret` 与 `sret`
+## 3. 进程创建与初始化
 
-`__alltraps` 的核心逻辑为：
+### 3.1 `alloc_proc()`
 
-```asm
-SAVE_ALL
-mv a0, sp
-jal trap
-```
+该函数使用 `kmalloc()` 分配 `struct proc_struct`，清零后设置初始状态：`PROC_UNINIT`、`pid = -1`、内核页表物理地址以及空链表和哈希节点。此时只建立 PCB，不分配内核栈，也不把进程加入全局进程集合。
 
-按照 RISC-V ABI，`a0` 是第一个参数，因此 `trap()` 接收到当前 TrapFrame 指针。`jal trap` 返回地址就是紧随其后的 `__trapret`，所以 C 函数返回后自然进入恢复流程。`__trapret` 执行 `RESTORE_ALL`，最后由 `sret` 根据恢复后的 `sstatus` 和 `sepc` 返回。
+### 3.2 `copy_mm()`
 
-### 3.5 模块一规格
+Lab 4 只创建内核线程，不复制用户地址空间。因此当前进程的 `mm` 必须为空，新线程同样令 `mm = NULL`，并使用 `boot_pgdir_pa`。这一实现不是完整的进程地址空间复制；用户进程的页表复制、共享与写时复制属于后续实验内容。
 
-#### Pre-Condition
+### 3.3 `copy_thread()`
 
-- `stvec` 已指向 `__alltraps`。
-- CPU 已把 Trap 返回所需状态写入 Supervisor CSR。
-- 当前内核栈有效，`SAVE_ALL` 可建立完整 TrapFrame。
-- `struct trapframe` 的字段顺序与汇编槽位一致。
+TrapFrame 被放在新进程内核栈顶端，并复制父调用者准备的初始现场。新线程的返回值寄存器 `a0` 被置零，TrapFrame 中的栈指针按传入参数设置。进程上下文中的 `ra` 指向 `forkret`，`sp` 指向该 TrapFrame，使首次被调度时能够沿 `forkret -> forkrets -> __trapret` 恢复现场，而不是从普通 C 函数返回。
 
-#### Post-Condition
+### 3.4 `do_fork()`
 
-- Trap 发生时的通用寄存器和 CSR 已完整保存并传给 `trap()`。
-- `trap()` 返回后，所有已保存通用寄存器、`sstatus`、`sepc` 和原 `sp` 被恢复。
-- TrapFrame 栈空间不再占用当前执行栈。
-- CPU 可通过 `sret` 返回正确执行位置。
+`do_fork()` 依次完成 PCB 分配、父子关系设置、内核栈建立、地址空间处理和线程上下文复制。随后在关中断保护下分配 PID，将进程加入 PID 哈希表和进程链表，增加 `nr_process`，并把进程唤醒为可运行状态。任一步骤失败时，函数按已获得资源的逆序释放内核栈和 PCB，避免残留半初始化进程。
 
-#### Case
+### 3.5 `kernel_thread()`
 
-- **正常 Trap 进入**：保存 36 个槽位，向 C 函数传入 `sp`。
-- **C 处理完成**：从 `__trapret` 恢复上下文并执行 `sret`。
-- **栈指针恢复**：使用槽位 2 中由 `sscratch` 取得的原 `sp`，并最后恢复。
+该函数构造一个初始 TrapFrame：用 `s0` 保存线程函数地址、`s1` 保存参数，将 `sepc` 指向 `kernel_thread_entry`，并设置适合 S 模式返回的 `sstatus`。然后调用 `do_fork(CLONE_VM)` 创建内核线程。`kernel_thread_entry` 最终从约定寄存器取出函数和参数并调用目标函数。
 
-#### Requirements
+### 3.6 `proc_init()`
 
-- 不修改 `SAVE_ALL`、TrapFrame 布局和 `trap()` 签名。
-- 保存与恢复槽位必须严格对称。
-- 调用 C 函数时栈必须满足 ABI 对齐。
-- 不得在读取完成前覆盖 TrapFrame 基址或保存 CSR 的临时寄存器。
+`proc_init()` 初始化全局进程链表和 PID 哈希表，将当前启动上下文组织为 PID 0 的 `idleproc`，并通过 `kernel_thread(init_main, ...)` 创建 PID 1 的 `initproc`。函数还通过断言检查 PID、进程数量和进程查找关系，保证调度开始前基本进程结构一致。
 
-## 4. 功能模块二：中断与异常处理
+## 4. 进程调度与上下文切换
 
-### 4.1 `trap_dispatch()`
+### 4.1 `cpu_idle()`
 
-RISC-V 的 `scause` 最高位表示当前 Trap 是否为中断。源码把 `tf->cause` 转换为有符号 `intptr_t`：值小于零时调用 `interrupt_handler()`，否则调用 `exception_handler()`。该逻辑保持了老师框架原样。
+空闲进程在无限循环中检查 `need_resched`。需要调度时调用 `schedule()`；否则继续等待。它保证在没有普通可运行进程时，CPU 始终有一个合法执行实体。
 
-### 4.2 `interrupt_handler()`
+### 4.2 `schedule()`
 
-函数先清除 `cause` 最高位，取得中断编号，再按照 `IRQ_*` 宏分类。对 S 模式时钟中断执行：
+调度过程先关闭本地中断并清除当前进程的 `need_resched`。它从当前进程之后开始循环扫描进程链表，选择首个状态为 `PROC_RUNNABLE` 的进程；若没有找到，则退回 `idleproc`。选中进程的运行次数增加；若选中者不是当前进程，则调用 `proc_run()`。
 
-```c
-clock_set_next_event();
-ticks++;
-if (ticks % TICK_NUM == 0) {
-    print_ticks();
-}
-```
+当前算法属于简单的循环扫描调度。它完成了“选择谁运行”，但没有优先级、时间片队列或公平性统计等高级策略。
 
-先设置下一次事件能够保证时钟中断持续发生；每次中断只增加一次 `ticks`；每 100 次输出一次 `100 ticks`。其他已知中断输出类型信息；未知中断输出编号并调用 `print_trapframe(tf)`。
+### 4.3 `proc_run()`
 
-指导书要求累计输出达到 `SHUTDOWN_AFTER` 后关机，但老师提供的源码、头文件和原始构建配置中没有定义该宏，也没有给出规定次数。实现使用 `#ifdef SHUTDOWN_AFTER` 保留统计次数和 `sbi_shutdown()` 路径；本次提交进一步在 Makefile 中增加可选的 `SHUTDOWN_AFTER=<count>` 编译入口，不设置时保持官方测试原行为，获得老师规定的正整数后可显式启用。报告不猜测次数，也不把默认构建描述为已经执行自动关机。
+`proc_run()` 在关中断保护下切换 `current`，根据目标进程的 `pgdir` 计算并写入 Sv39 的 `satp`，刷新 TLB，然后调用 `switch_to(&prev->context, &next->context)`。对于本实验内核线程，二者使用内核页表；保留地址空间切换步骤是为了与以后用户进程兼容。
 
-### 4.3 `exception_handler()`
+### 4.4 `switch_to()`
 
-模块处理两种实验要求的同步异常：
+`switch_to` 按 `struct context` 的真实布局保存旧进程的 `ra`、`sp` 和 `s0`～`s11`，再从新进程上下文恢复这些寄存器并执行 `ret`。这些寄存器是 RISC-V ABI 中需要被调用者保存的寄存器，足以让一个被暂停的内核调用链继续执行。
 
-- 非法指令：输出 `Illegal instruction at ...`。
-- 断点：输出 `Breakpoint at ...`。
+首次切换到 `initproc` 时，新上下文的 `ra` 不是某个过去的返回点，而是预先设置的 `forkret`，因此控制流会进入 TrapFrame 恢复路径，最后到达 `kernel_thread_entry` 和 `init_main()`。
 
-二者都需要更新 `tf->epc`，否则 `sret` 会回到同一条异常指令并再次触发 Trap。RISC-V 压缩指令最低两位不等于 `11`，长度为 2 字节；普通 32 位指令最低两位为 `11`。实现读取 `epc` 指向的低 16 位：
+![图 1：正常 QEMU 启动后的内核线程运行结果](images/lab4_normal_qemu.png)
 
-```c
-return ((instruction & 0x3) == 0x3) ? 4 : 2;
-```
+*图 1：当前参考环境中直接执行 `make qemu`，`initproc` 成功输出预期信息；进入框架预期的 `do_exit()` panic 后，Kernel Debug Monitor 稳定停留在单个 `K>` 等待输入。*
 
-然后把对应长度加到 `tf->epc`。其他异常调用 `print_trapframe(tf)`，本实验不实现缺页恢复等复杂处理。
+### 4.5 `local_intr_save()` / `local_intr_restore()` 的含义
 
-### 4.4 模块二规格
+这两个接口读取并保存当前中断状态，在临界区关闭 S 模式中断，退出时恢复原状态，而不是无条件开中断。它们用于保护进程链表、PID 分配、`current` 和调度切换等不能被本地中断处理流程打断的操作。
 
-#### `interrupt_handler()`
+关中断是单核环境中防止中断并发的一种手段，但不等价于通用同步锁：它不能阻止其他 CPU 并发访问共享数据，也不自动提供适用于多核的锁语义、所有权管理或等待机制。多核内核仍需要自旋锁等同步原语及明确的内存顺序。
 
-**Pre-Condition**
+## 5. Prompt / Specification 驱动的实现方法
 
-- `tf` 指向由汇编入口建立的有效 TrapFrame。
-- `trap_dispatch()` 已确认 `scause` 最高位表示中断。
-- 时钟驱动和 SBI 计时接口可用。
+本实验将任务分为五个阶段：框架整合、页表操作、进程创建、进程调度和最终验收。每个实现 Prompt 都按 `[PROMPT]`、`[RELY]`、`[GUARANTEE]`、`[SPECIFICATION]` 组织：
 
-**Post-Condition**
+- `[RELY]` 限定可以依赖的真实文件、数据结构和接口，避免从其他版本 uCore 猜测实现。
+- `[GUARANTEE]` 明确必须交付的函数、兼容性和禁止修改的边界。
+- `[SPECIFICATION]` 用前置条件、后置条件、分支情况和验证要求描述功能。
+- 每个模块先读源码和指导书，再做最小实现、独立编译和完整构建；后续模块未完成造成的链接错误如实记录，不用伪实现绕过。
+- 最终验收把功能正确性与评分环境兼容性分开，避免把替代启动结果冒充原始评分结果。
 
-- 中断类型被正确识别。
-- S 模式时钟中断重新安排下一次事件，`ticks` 恰好增加一次。
-- 每逢 `TICK_NUM` 的整数倍输出统计信息。
-- 已知非时钟中断输出类型，未知中断输出完整 TrapFrame。
-- 返回后可继续统一 Trap 返回流程。
+五份完整开发提示词及独立执行记录见 [prompt.md](prompt.md)。
 
-**Case**
+## 6. 调试过程、问题与解决方法
 
-- **IRQ_S_TIMER**：重装定时器、计数和周期输出。
-- **其他已知中断**：输出对应提示，不实现本实验范围外的设备驱动。
-- **未知中断**：打印编号与 TrapFrame。
+### 6.1 Lab 3 到 Lab 4 的安全整合
 
-**Requirements**
+没有用 Lab 4 框架整体覆盖已有工程，而是比较同名文件并选择性引入 `kern/process/`、`kern/schedule/`、`kmalloc`、`vmm` 等模块，同时保留 Lab 2 的 Best-Fit、Buddy、SLUB 和 Lab 3 的 Trap 实现。初次完整链接出现 `page_insert`、`page_remove`、`proc_init`、`cpu_idle` 等未定义符号，属于相应练习尚未完成的真实状态。随着三个模块依次实现，这些链接错误逐步消失。
 
-- 中断编号必须清除 `scause` 最高位后再匹配。
-- 不能只计数而不重装定时器。
-- 不硬编码测试结果，不改变官方输出检查。
+证据：`code/verification/lab4_integration_build.log`、`lab4_module1_full_build.log`、`lab4_module2_full_build.log`。
 
-#### `exception_handler()`
+### 6.2 Sv39 非叶子权限与 A/D 位
 
-**Pre-Condition**
+最初页表实现暴露出两个环境相关问题：非叶子页表项若设置 `PTE_U` 等叶子权限位，会违反 Sv39 对非叶子项的约束；叶子项缺少 Accessed/Dirty 位时，在当前 QEMU 行为下也可能无法按预期访问。最终非叶子项只保留 `PTE_V`，叶子项设置 `PTE_A`，可写映射再设置 `PTE_D`。同时补充了中间页表分配失败时的回滚，避免资源泄漏。
 
-- `tf` 指向有效 TrapFrame，`cause` 和 `epc` 已保存。
-- `trap_dispatch()` 已确认当前为同步异常。
+### 6.3 官方测试回调类型警告
 
-**Post-Condition**
+官方测试中的 `test_lab4_thread` 类型为 `void (*)(void *)`，而 `kernel_thread` 的正式接口要求 `int (*)(void *)`。当前 GCC 因此报告 `-Wincompatible-pointer-types`。Makefile 仅将该项从错误降为警告，未改动官方测试和内核接口。在实际官方调度测试中，该测试线程进入无限循环，不从不兼容的返回路径返回，因此本次执行可以完成；但从 C 类型系统看，这仍是应由测试代码或统一接口定义解决的真实不匹配，不能视为完全消除。
 
-- 非法指令和断点被识别并输出规定信息。
-- `epc` 按实际 16 位或 32 位指令长度前移。
-- 返回后不重复执行已经触发异常的指令。
-- 未专门实现的异常输出 TrapFrame。
+### 6.4 QEMU / OpenSBI 启动兼容问题
 
-**Case**
+问题最初出现在 QEMU 7.0.0（`/opt/qemu/bin/qemu-system-riscv64`）和 OpenSBI 1.0 `fw_dynamic` 环境中。老师原始评分命令使用：
 
-- **CAUSE_ILLEGAL_INSTRUCTION**：输出地址并跳过实际长度的非法指令。
-- **CAUSE_BREAKPOINT**：输出地址并跳过实际长度的断点指令。
-- **其他异常**：仅提供诊断输出，不伪造恢复逻辑。
-
-**Requirements**
-
-- 不假设所有指令都是 4 字节。
-- 不改变 `trap_dispatch()`、TrapFrame 或公开函数签名。
-- 不扩展到进程调度、缺页恢复等本实验未要求功能。
-
-## 5. AI 提示词设计
-
-Prompt 归档保存在 `prompt.md`，包括：
-
-1. Lab 3 初始框架与 Lab 2 成果安全整合（会话历史整理版）。
-2. 模块一：Trap 上下文恢复与统一入口（会话历史整理版）。
-3. 模块二：中断与异常处理（附录保存原始附件全文）。
-4. QEMU/OpenSBI 评分兼容性诊断（会话历史整理版）。
-
-提示词遵循 Lab 0.5 的四段式结构：
-
-- **[PROMPT]**：描述模块能力、真实目标文件、操作边界和验证要求。
-- **[RELY]**：只列工程中实际存在的结构体、宏、函数和文件，要求先读源码再实现。
-- **[GUARANTEE]**：列出必须交付且签名不可改变的接口。
-- **[SPECIFICATION]**：使用 Pre-Condition、Post-Condition、Case 和 Requirements 描述可验证行为。
-
-这种设计没有把固定指令序列当成答案，而是约束保存/恢复关系、ABI、CSR、时钟重装、EPC 更新和不可修改范围，使 AI 可以选择具体实现，同时必须满足当前框架真实语义。模块粒度也按照“可独立实现和验证的一项功能”划分，而不是一个函数一个 Prompt。
-
-## 6. 实验调试与问题解决
-
-### 6.1 Lab 3 框架与 Lab 2 成果整合
-
-最初 `lab3` 分支仍以已完成 Lab 2 的提交 `02b2c3f` 为基线，当前 `code/` 没有老师 Lab 3 的 Trap、时钟和中断框架。整合时没有覆盖式复制整个 `lab3_new`，而是逐文件比较并导入新增模块；`pmm.c` 中的 `page_init()`、Best-Fit、Buddy、SLUB 和地址映射均被保留。
-
-启用中断后，物理页分配接口还使用 `local_intr_save()` / `local_intr_restore()` 包围管理器操作，避免中断打断链表和计数更新。Makefile 在保留 Lab 2 的 `PMM=buddy` 与 `SLUB_CHALLENGE=1` 可选构建开关的同时加入 `kern/trap`、`kern/sync` 和 Lab 3 评分入口。
-
-### 6.2 模块一编译
-
-模块一先单独编译 `trapentry.S`，确认汇编槽位、CSR 名称和 ABI 调用均可被当前工具链接受。完整构建在模块二未实现时无法完成，这是未完成依赖，不是通过空函数绕过的问题。模块二完成后，整个工程链接成功。
-
-### 6.3 模块二编译错误
-
-首次补丁在 `lab3 function2` 标记前意外留下一个字符 `+`，编译器立即报告语法错误。检查实际文件后删除该字符，重新编译成功。该问题由真实编译发现并修复，没有修改测试来规避错误。
-
-### 6.4 `SHUTDOWN_AFTER` 与真实框架差异
-
-模块二提示词和指导书都提到 `SHUTDOWN_AFTER`，但对实际源码、头文件、Makefile 和配置的全面搜索确认老师框架没有定义该宏，也没有给出数值。若直接给出默认值会编造实验要求；若默认启用任意次数的关机，又可能让持续到 `ticks=200` 的官方测试提前退出。
-
-因此采用最小兼容方案：保留 `trap.c` 已有条件代码，在 Makefile 中提供 `make SHUTDOWN_AFTER=<count> ...` 的可选编译入口。默认构建不定义宏，官方测试不受影响；当老师确认规定次数后，传入该正整数即可编译自动关机路径。例如 `SHUTDOWN_AFTER=1` 仅用于验证机制时，会在第一次输出 `100 ticks` 后调用 `sbi_shutdown()`，该值不代表老师规定值。
-
-### 6.5 QEMU/OpenSBI 评分兼容问题
-
-普通 `make qemu` 使用：
-
-```bash
--kernel bin/ucore.img
-```
-
-可以正常启动。但官方 `tools/grade.sh` 使用：
-
-```bash
+```text
 -device loader,file=bin/ucore.img,addr=0x80200000
 ```
 
-在 QEMU 7.0.0/OpenSBI 1.0 下，GDB 观察到 loader 已把内核首字节写到 `0x80200000`，CPU 仍从复位向量 `0x1000` 进入 OpenSBI；OpenSBI 显示：
+该参数会把原始镜像字节写入内存，但在当前组合中不会把 OpenSBI 动态固件的下一阶段入口设置为 `0x80200000`。启动日志显示：
 
 ```text
 Domain0 Next Address : 0x0000000000000000
 ```
 
-因此失败发生在 OpenSBI 交接内核之前，Trap 代码没有执行。使用 `-kernel bin/ucore.img` 后，OpenSBI 得到：
+因此历史失败发生在 uCore 第一条指令执行之前。增加 `force-raw=on` 仍不改变入口。将启动参数临时改为：
 
 ```text
-Domain0 Next Address : 0x0000000080200000
+-kernel bin/ucore.img
 ```
 
-并进入内核。`-device loader,...,cpu-num=0` 会绕过正常 OpenSBI 交接，串口无输出，因此不是正确替代方案。最终在隔离副本中保留全部官方测试、断言和计分，只把启动参数替换为 `-kernel`，三项测试得到 100/100。仓库中的官方脚本未为此修改。
+时 OpenSBI 能获得 `0x80200000` 作为下一阶段入口，内核和官方测试可以执行。该兼容脚本只在临时工程中调整启动参数，保留了官方测试注入、断言、超时和计分规则；它证明三个功能模块正确，但不能代替原始评分流程。
 
-## 7. 实验测试与结果
+![图 2：原始评分启动方式的兼容性异常](images/lab4_original_grade_issue.png)
 
-### 7.1 编译和普通启动
+*图 2：原始 `make grade` 得到 `0/30`，同时 generic loader 启动时 OpenSBI 的 `Domain0 Next Address` 为 `0x0`，说明内核尚未进入执行。*
 
-执行：
+随后按照指导书参考环境，从 QEMU 官方源码独立构建并安装：
+
+- QEMU 4.1.1：`/home/fall/opt/qemu-4.1.1`
+- 默认 RISC-V 固件：OpenSBI v0.4 `opensbi-riscv64-virt-fw_jump.bin`
+
+QEMU 4.1.1 的 `fw_jump` 固件按约定跳转到 `0x80200000`，而 generic loader 已把 `bin/ucore.img` 放在该地址，因此无需修改原始 `grade.sh`。实际使用 Makefile 已有的 `QEMU` 变量执行：
 
 ```bash
-cd /home/fall/oslab/OS/code
-make -j2
-timeout 6s make qemu
+make QEMU="$HOME/opt/qemu-4.1.1/bin/qemu-system-riscv64" grade
 ```
 
-真实结果包括：
-
-```text
-+ ld bin/kernel
-riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
-Domain0 Next Address      : 0x0000000080200000
-(THU.CST) os is loading ...
-memory management: best_fit_pmm_manager
-check_alloc_page() succeeded!
-++ setup timer interrupts
-100 ticks
-100 ticks
-```
-
-这同时证明 Lab 2 的默认 Best-Fit 管理器仍能初始化和通过自检，Lab 3 时钟中断能够持续返回并再次触发。
-
-为验证指导书要求的自动关机能力，另外执行：
+三项测试全部为 `OK`，原始评分真实得到 `30/30`。之后 WSL 当前环境已将 `qemu-system-riscv64` 默认解析到上述 4.1.1 安装，因此可以直接执行：
 
 ```bash
-make clean
-make SHUTDOWN_AFTER=1 qemu
+make qemu
+make grade
 ```
 
-真实运行在第一次输出 `100 ticks` 后由 `sbi_shutdown()` 正常结束，记录见 `../code/verification/shutdown_after_1.log`。这里的 1 只是机制测试值，不是老师规定次数；默认构建仍不定义宏，不影响官方持续时钟测试。
+原 QEMU 7.0.0 仍保留在 `/opt/qemu`，没有被覆盖或卸载。
 
-### 7.2 官方功能测试覆盖
+### 6.5 Kernel Debug Monitor 的 `K>` 无限刷屏问题
 
-| 用例 | 实际检查 | 兼容启动结果 |
-|---|---|---|
-| Test 1 | `ebreak` 进入 Trap；恢复测试汇编设置的寄存器；正确更新断点 EPC | PASS，35/35 |
-| Test 2 | 4 字节非法指令返回；S 模式软件中断；未知中断 15；未知异常 20 的 TrapFrame | PASS，25/25 |
-| Test 3 | 全局中断打开后持续重装定时器，等待 `ticks >= 200` | PASS，40/40 |
-
-关键输出为：
+进入 `do_exit()` 的预期 panic 后，监视器最初会持续高速输出 `K>`。真实调用链为：
 
 ```text
-Breakpoint at 0xffffffffc0201ad4
-[Test 1] Trap entry and breakpoint return: PASS (35/35)
-
-Illegal instruction at 0xffffffffc0201a86
-Supervisor software interrupt
-Unknown interrupt: cause 15
-[Test 2] Illegal instruction return: PASS (25/25)
-
-100 ticks
-100 ticks
-[Test 3] Sustained supervisor timer: PASS (40/40, ticks=200)
+kmonitor() -> readline("K> ") -> getchar() -> cons_getc()
 ```
 
-测试中的具体地址由当前链接结果产生，不作为代码硬编码条件。
+OpenSBI legacy console 在没有输入字符时返回 `-1`，但 `cons_getc()` 的接口约定是“无输入返回 0”。原实现直接把 `-1` 返回给上层：`getchar()` 只会在返回值为 0 时等待，而 `readline()` 遇到负值会立即返回 `NULL`，于是 `kmonitor()` 马上开始下一轮并再次打印提示符。
 
-### 7.3 原始评分与兼容评分必须区分
+最小修复位于 `kern/driver/console.c`，只统一无输入状态，不改变监视器、panic 或进程模块：
 
-| 方式 | QEMU 启动参数 | 真实结果 |
-|---|---|---|
-| 原始 `make grade` | `-device loader,file=bin/ucore.img,addr=0x80200000` | `Total Score: 0/100` |
-| 隔离兼容评分 | `-kernel bin/ucore.img` | `Total Score: 100/100` |
+```c
+return (c < 0) ? 0 : c;
+```
 
-原始 0/100 的三份串口日志只有 OpenSBI 信息，`Domain0 Next Address` 为 0；它们不能反映 Trap 实现失败。兼容评分运行的是同一份注入测试、同一组标志字符串和同一计分规则，区别仅是 QEMU 如何把下一阶段入口交给 OpenSBI。
+修复前，8 秒运行会产生大量重复 `K>`；修复后，`make qemu` 完整输出启动和 `initproc` 信息，监视器只显示一个 `K>` 并持续等待。空等期间没有新增提示符，输入 `help` 能正确列出 `help`、`kerninfo`、`backtrace`，随后重新显示单个 `K>`。重新执行三项官方测试均为 `OK`，说明该控制台输入修复没有造成 Lab 4 功能回归。
 
-证据文件：
+## 7. 操作系统原理联系、区别与未覆盖内容
 
-- `../code/verification/original_make_grade.log`
-- `../code/verification/original/.qemu.GRADE_LAB3_*.out`
-- `../code/verification/compatible_make_grade.log`
-- `../code/verification/compatible/.qemu.GRADE_LAB3_*.out`
-- `../code/verification/grade_qemu7_compat.sh`
-- `../code/verification/shutdown_after_1.log`
+### 7.1 Trap 上下文与进程上下文
 
-## 8. 实验对应的操作系统知识
+TrapFrame 保存中断或异常发生时恢复特权级执行所需的较完整现场，包括通用寄存器和 `sstatus`、`sepc` 等 CSR；`struct context` 只保存内核函数调用约定下跨越 `switch_to` 必须保留的 `ra`、`sp`、`s0`～`s11`。前者解决“从 Trap 返回到哪里”，后者解决“以后如何继续这条内核调用链”，两者作用相关但不能互换。
 
-### 8.1 中断与异常
+### 7.2 时钟中断与进程调度
 
-中断通常由外部或异步事件触发，例如时钟到期；异常与当前指令同步，例如非法指令和断点。RISC-V 把二者统一表示为 Trap，通过 `scause` 最高位区分中断和异常，再用低位编号表示具体原因。
+时钟中断提供周期性事件，可以设置 `need_resched` 或驱动时间片耗尽；调度器则根据进程状态和策略选择下一个运行者。本实验的核心调度路径已经建立，但当前调度算法仍是简单扫描，尚未实现完整的时间片轮转、优先级或多级反馈队列。产生时钟中断不等于已经完成调度，真正切换还要经过安全的调度点和 `proc_run()`。
 
-### 8.2 Trap 上下文
+### 7.3 关中断与同步
 
-Trap 会打断任意位置的执行流。为了透明返回，内核必须保存所有可能被处理代码破坏的通用寄存器以及 `sepc`、`sstatus`、`scause`、`stval`。TrapFrame 是汇编与 C 语言共同遵守的内存 ABI；任何字段偏移不一致都会造成恢复错误。
+关本地中断能防止当前 CPU 被中断处理程序重入关键路径，适合本实验的单核内核临界区；锁用于协调多个执行实体对共享数据的访问，尤其是多核并发。两者都服务于原子性，但适用范围和语义不同。
 
-Trap 上下文保存与进程上下文切换都涉及保存和恢复处理器状态，二者存在基础设施上的联系：时钟 Trap 可以形成调度时机，TrapFrame 也可以为调度器提供被中断执行流的寄存器快照。但本实验的 Trap 返回始终恢复同一条被中断执行流，目标是让一次中断或异常对原程序尽量透明；完整进程上下文切换则要把当前进程状态长期保存到进程控制块，选择另一个进程，恢复另一套寄存器、内核栈乃至地址空间。前者是进入和退出内核的机制，后者是改变 CPU 当前运行主体的调度动作，本实验只实现了前者。
+### 7.4 本实验尚未实现的重要机制
 
-### 8.3 RISC-V 特权级与 CSR
+- 用户进程独立地址空间、用户态权限和用户栈。
+- 完整的 `fork/exec/wait/exit` 生命周期及僵尸进程回收。
+- 系统调用、用户态与内核态的完整切换链。
+- 请求分页、页面置换、交换、写时复制等高级虚拟内存机制。
+- 抢占式时间片调度、优先级调度及公平性策略。
+- 多核调度、跨核 TLB shootdown 和多核同步。
 
-本实验由 S 模式处理 Trap。`stvec` 保存统一入口，`sepc` 保存返回位置，`sstatus` 保存返回特权级及中断状态，`scause` 保存原因，`stval` 提供异常附加信息，`sie` 和 `sstatus.SIE` 分别控制具体中断源与 S 模式全局中断。
+老师框架中的 `do_exit()` 仍以 `panic("process exit!!.")` 结束。该输出与 Lab 4 指导书给出的运行阶段相符，表示线程已执行到当前实验边界，不代表已经实现完整进程退出机制。
 
-### 8.4 `sret`
+## 8. 测试结果、证据与限制
 
-`sret` 不是普通函数返回。它使用恢复后的 Supervisor CSR 恢复特权状态和 PC。因此 `RESTORE_ALL` 不仅要恢复通用寄存器，还必须在 `sret` 前写回正确的 `sstatus` 和 `sepc`。
+### 8.1 真实结果汇总
 
-### 8.5 时钟中断
+| 检查项 | 启动方式 | 真实结果 | 证据 |
+| --- | --- | --- | --- |
+| 默认工程编译 | 当前工程 Makefile | 成功生成内核映像 | `normal_qemu.log` 及阶段构建日志 |
+| 正常 QEMU 启动 | 当前 QEMU 4.1.1，直接 `make qemu` | 进入 `init_main()`；预期 panic 后稳定等待于单个 `K>` | 图 1 |
+| 历史原始评分 | QEMU 7.0.0 + OpenSBI 1.0 `fw_dynamic` | **0/30**，内核未进入执行 | `original_make_grade.log`、图 2 |
+| 历史兼容验证 | QEMU 7.0.0，临时改用 `-kernel` | 三项测试 PASS，**30/30** | `compatible_make_grade.log` |
+| 最终原始评分 | QEMU 4.1.1 + OpenSBI v0.4 `fw_jump`，未经修改的 `make grade` | PMM、Process Create、Schedule 全部 OK，**30/30** | 图 3 |
 
-OpenSBI 的 `sbi_set_timer()` 安排一次未来事件。该事件是一次性的，所以每次处理时都必须调用 `clock_set_next_event()`。持续重装时钟是形成周期性时钟中断的关键，也是未来调度器获得时间片的基础。
+最终结论需要区分三个阶段：QEMU 7 环境下原始评分的历史结果确实为 `0/30`；兼容 `-kernel` 方式曾证明三个模块功能正确，但不是原始评分；复现 QEMU 4.1.1/OpenSBI v0.4 后，未经修改的原始 `make grade` 已真实获得 `30/30`。
 
-时钟中断与进程调度的联系在于：周期性时钟为内核提供稳定的抢占检查点，调度器可以在这些检查点更新运行时间、减少时间片并决定是否切换进程。但时钟中断本身不等于调度。本实验的处理函数只重新设置定时器、累加 `ticks`、输出统计信息，并最终恢复原 TrapFrame；它没有就绪队列、调度策略、时间片归属或进程切换。因此本实验完成的是调度所需的时钟驱动和 Trap 入口，而不是进程调度器。
+![图 3：QEMU 4.1.1 环境下原始 make grade 的最终结果](images/lab4_original_grade_pass.png)
 
-### 8.6 中断使能与关闭
+*图 3：当前参考环境中直接执行未经修改的 `make grade`，PMM、Process Create 和 Schedule 三项均为 `OK`，最终总分 `30/30`。*
 
-`clock_init()` 设置 `sie.STIE` 允许 S 模式时钟中断源，`intr_enable()` 设置 `sstatus.SIE` 打开全局中断。Lab 2 的页分配接口使用局部关中断保护共享管理状态，体现了单核内核中最基本的临界区保护方式。
+### 8.2 证据文件
 
-关中断与同步机制都可以防止临界区被并发执行流破坏。在当前单核实验中，保存本地中断状态并暂时清除 `SIE`，能够阻止同一 HART 上的中断处理程序打断页分配链表更新，退出临界区后再恢复原状态。区别在于，关本地中断只约束当前 HART，不能阻止其他核同时访问共享数据，也不能替代需要等待、所有权和内存顺序语义的锁；长时间关中断还会增加中断延迟。完整操作系统通常用自旋锁、互斥量、信号量等同步原语表达跨执行流或跨核互斥，并只在必要的短临界区结合关中断。本实验的做法是单核、短临界区条件下的基础保护，不是通用并发同步方案。
+- [原始评分日志](../code/verification/lab4/original_make_grade.log)
+- [兼容评分日志](../code/verification/lab4/compatible_make_grade.log)
+- [兼容启动串口日志](../code/verification/lab4/compatible_qemu_serial.log)
+- [generic loader 启动日志](../code/verification/lab4/loader_boot.log)
+- [force-raw loader 启动日志](../code/verification/lab4/loader_force_raw_boot.log)
+- [正常 QEMU 日志](../code/verification/lab4/normal_qemu.log)
+- [验证说明与复现命令](../code/verification/lab4/README.md)
+- [原始评分复现脚本](../code/verification/lab4/reproduce_original_grade.sh)
+- [兼容评分复现脚本](../code/verification/lab4/reproduce_compatible_grade.sh)
 
-## 9. 本实验未涉及的重要知识
+### 8.3 验证边界
 
-本实验建立了 Trap 基础设施，但尚未覆盖完整操作系统的以下部分：
-
-- **完整进程上下文切换**：当前保存的是一次 Trap 的 CPU 状态，没有进程控制块之间的调度切换。
-- **进程调度**：虽然有周期时钟，但没有就绪队列、时间片分配和调度策略。
-- **用户态到内核态的系统调用闭环**：尚未实现用户进程、参数校验、系统调用表和返回用户态的完整路径。
-- **缺页异常恢复**：其他异常仅打印 TrapFrame，没有按虚拟内存语义分配页面或终止进程。
-- **完整设备中断驱动**：已区分外部中断编号，但没有 PLIC 初始化、设备确认和驱动处理。
-- **多核并发与锁**：本实验使用局部关中断保护单核临界区，没有实现 SMP 下的自旋锁和跨核中断同步。
-
-## 10. 实验总结
-
-本实验在保留 Lab 2 内存管理成果的基础上，完成了 RISC-V uCore 的 Trap 保存、C 语言分发、具体中断/异常处理和上下文恢复闭环。模块一的核心是 TrapFrame 布局、恢复顺序和 ABI 一致性；模块二的核心是持续重装时钟、正确识别 `scause`、按真实指令长度更新 `epc`。
-
-真实测试表明三个官方功能用例在兼容启动方式下全部通过，合计 100/100；`SHUTDOWN_AFTER=1` 的机制测试也证明可选自动关机路径能够正常退出，但老师规定的正式次数仍未在框架或指导书中给出。当前还存在评分环境风险：原始 `make grade` 在 QEMU 7.0.0/OpenSBI 1.0 下因 generic loader 没有向 OpenSBI 提供下一阶段入口而得到 0/100。报告和证据目录均保留这两种结果，没有把兼容测试冒充为原始评分通过。提交前需要确认正式关机次数及老师评分环境，或获得允许使用 `-kernel bin/ucore.img` 的说明。
+- 官方测试、`grade.sh`、`inject.py` 的断言和分值未修改。
+- 历史兼容脚本结果与最终原始评分结果分别记录，没有相互冒充。
+- Lab 2 的 Buddy/SLUB 源码和 Lab 3 Trap 源码在工程中保留，但本轮 Lab 4 验收没有重新执行 Buddy/SLUB 专项测试，因此不新增其通过结论。
+- 当前机器已经独立安装并实际验证 QEMU 4.1.1/OpenSBI v0.4；原 QEMU 7.0.0 仍被保留。
+- 回调函数指针类型警告仍然存在，原因和实际影响已在第 6.3 节说明。

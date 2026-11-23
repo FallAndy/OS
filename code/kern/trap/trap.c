@@ -30,6 +30,8 @@ void idt_init(void) {
     write_csr(sscratch, 0);
     /* Set the exception vector address */
     write_csr(stvec, &__alltraps);
+    /* Allow supervisor code to access user-mapped pages when required. */
+    set_csr(sstatus, SSTATUS_SUM);
 }
 
 /* trap_in_kernel - test if trap happened in kernel */

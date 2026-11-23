@@ -12,6 +12,30 @@
 // physical/virtual page number of address
 #define PPN(la) (((uintptr_t)(la)) >> PGSHIFT)
 
+/* Sv39 page-table indexes and entry address helpers used by Lab 4. */
+#define NPDEENTRY       512
+#define NPTEENTRY       512
+#define PTSIZE          (PGSIZE * NPTEENTRY)
+#define PTSHIFT         21
+
+#define PTXSHIFT        12
+#define PDX0SHIFT       21
+#define PDX1SHIFT       30
+#define PTE_PPN_SHIFT   10
+
+#define PDX1(la) ((((uintptr_t)(la)) >> PDX1SHIFT) & 0x1FF)
+#define PDX0(la) ((((uintptr_t)(la)) >> PDX0SHIFT) & 0x1FF)
+#define PTX(la)  ((((uintptr_t)(la)) >> PTXSHIFT) & 0x1FF)
+#define PGOFF(la) (((uintptr_t)(la)) & (PGSIZE - 1))
+
+#define PGADDR(d1, d0, t, o)                                           \
+    ((uintptr_t)((d1) << PDX1SHIFT | (d0) << PDX0SHIFT |               \
+                 (t) << PTXSHIFT | (o)))
+
+#define PTE_ADDR(pte)                                                   \
+    (((uintptr_t)(pte) & ~0x3FFUL) << (PTXSHIFT - PTE_PPN_SHIFT))
+#define PDE_ADDR(pde) PTE_ADDR(pde)
+
 // Sv39 linear address structure
 // +-------9--------+-------9--------+--------9---------+----------12----------+
 // |      VPN2      |      VPN1      |       VPN0       |  Offset within Page  |
@@ -28,7 +52,7 @@
 
 #define SV39_PGSIZE          4096                    // bytes mapped by a page
 #define SV39_PGSHIFT         12                      // log2(PGSIZE)
-#define SV39_PTSIZE          (PGSIZE * SV39NENTRY)   // bytes mapped by a page directory entry
+#define SV39_PTSIZE          (PGSIZE * SV39_NENTRY)  // bytes mapped by a page directory entry
 #define SV39_PTSHIFT         21                      // log2(PTSIZE)
 
 #define SV39_VPN0SHIFT       12                      // offset of VPN0 in a linear address
@@ -45,7 +69,7 @@
 #define SV39_PGADDR(v2, v1, v0, o) ((uintptr_t)((v2) << SV39_VPN2SHIFT | (v1) << SV39_VPN1SHIFT | (v0) << SV39_VPN0SHIFT | (o)))
 
 // address in page table or page directory entry
-#define SV39_PTE_ADDR(pte)   (((uintptr_t)(pte) & ~0x1FF) << 3)
+#define SV39_PTE_ADDR(pte)   PTE_ADDR(pte)
 
 // 3-level pagetable
 #define SV39_PT0                 0

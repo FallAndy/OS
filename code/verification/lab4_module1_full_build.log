@@ -1,0 +1,33 @@
++ cc kern/init/entry.S
++ cc kern/init/init.c
++ cc kern/libs/stdio.c
++ cc kern/debug/kdebug.c
++ cc kern/debug/kmonitor.c
++ cc kern/debug/panic.c
++ cc kern/driver/clock.c
++ cc kern/driver/console.c
++ cc kern/driver/dtb.c
++ cc kern/driver/intr.c
++ cc kern/driver/picirq.c
++ cc kern/trap/trap.c
++ cc kern/trap/trapentry.S
++ cc kern/mm/best_fit_pmm.c
++ cc kern/mm/buddy_pmm.c
++ cc kern/mm/default_pmm.c
++ cc kern/mm/kmalloc.c
++ cc kern/mm/slub.c
++ cc kern/mm/vmm.c
++ cc kern/process/entry.S
++ cc kern/process/proc.c
++ cc kern/process/switch.S
++ cc kern/schedule/sched.c
++ cc libs/hash.c
++ cc libs/printfmt.c
++ cc libs/readline.c
++ cc libs/sbi.c
++ cc libs/string.c
++ ld bin/kernel
+riscv64-unknown-elf-ld: obj/kern/init/init.o: in function `kern_init':
+/tmp/lab4-module1-build.oFy51q/kern/init/init.c:29:(.text.kern_init+0x44): undefined reference to `proc_init'
+riscv64-unknown-elf-ld: /tmp/lab4-module1-build.oFy51q/kern/init/init.c:38:(.text.kern_init+0x54): undefined reference to `cpu_idle'
+make: *** [Makefile:158: bin/kernel] Error 1

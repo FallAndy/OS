@@ -20,5 +20,7 @@ void cons_putc(int c) { sbi_console_putchar((unsigned char)c); }
 int cons_getc(void) {
     int c = 0;
     c = sbi_console_getchar();
-    return c;
+    // The legacy SBI console returns -1 when no input is available.
+    // Keep the console contract expected by getchar(): 0 means "no data".
+    return (c < 0) ? 0 : c;
 }

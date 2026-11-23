@@ -4,11 +4,14 @@
 #include <intr.h>
 #include <kdebug.h>
 #include <kmonitor.h>
+#include <picirq.h>
 #include <pmm.h>
+#include <proc.h>
 #include <slub.h>
 #include <stdio.h>
 #include <string.h>
 #include <trap.h>
+#include <vmm.h>
 #include <dtb.h>
 
 int kern_init(void) __attribute__((noreturn));
@@ -26,21 +29,21 @@ int kern_init(void) {
     print_kerninfo();
 
     // grade_backtrace();
-    idt_init();  // init interrupt descriptor table
-
     pmm_init();  // init physical memory management
 #ifdef SLUB_CHALLENGE
     slub_init();
     slub_check();
 #endif
 
+    pic_init();   // init interrupt controller
+    idt_init();   // init interrupt descriptor table
+    vmm_init();   // init virtual memory management
+    proc_init();  // init process table
 
     clock_init();   // init clock interrupt
     intr_enable();  // enable irq interrupt
 
-    /* do nothing */
-    while (1)
-        ;
+    cpu_idle();  // run idle process
 }
 
 void __attribute__((noinline))
